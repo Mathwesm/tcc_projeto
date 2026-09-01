@@ -1,0 +1,52 @@
+# Pipeline configuration. Every stage reads this file and nothing else.
+#
+# Unknown keys are rejected on load: a typo here would otherwise fall back to the
+# default silently, and a run with the wrong hyperparameters that never complains is
+# the most expensive failure this project can have.
+
+experiments:
+  # Substrings matched against the `experiment` column (`author+year/file.csv`).
+  # Confirmed by sampling the dataset; the reinforcement-learning domain is still
+  # open and must be chosen from the catalog produced by `poe eda`.
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  # Two-step task: the canonical model-based/model-free paradigm, confirmed by
+  # reading the actual transcripts rather than trusting the paper title.
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  dataset_name: marcelbinz/Psych-101
+  dataset_split: train
+  # 2048 is the realistic ceiling on a 6GB card. Centaur uses 32768; that gap is a
+  # declared limitation of this work, not an oversight.
+  max_seq_length: 2048
+  window_stride: null
+  val_fraction: 0.10
+  seed: 3407
+  # Choice budget per domain. peterson2021using alone has 1,097,375 choices against
+  # 29,776 in badham2017deficits; without this cap the training mix is ~92% one
+  # experiment and 'multi-domain specialisation' means nothing.
+  max_choices_per_domain: 30000
+  catalog_sample_per_experiment: 30
+
+model:
+  base_model: unsloth/Qwen3-1.7B
+  tokenizer_name: null
+  load_in_4bit: true
+  # Rank 8 mirrors the Centaur paper and is the comparison baseline. Higher ranks
+  # are a planned experiment, since rank 8 on 1.7B is far less capacity than rank 8
+  # on 70B.
+  lora_rank: 8
+  lora_alpha: 16
+  lora_dropout: 0.0
+
+training:
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_steps: 100
+  num_epochs: 1.0
+  per_device_batch_size: 1
+  grad_accumulation_steps: 32
