@@ -248,8 +248,9 @@ def prepare(
     ]
     logger.info("Matched {} participants across the target experiments", len(refs))
 
-    if reuse_splits and config.paths.splits.is_file():
-        assignment = load_manifest(json.loads(config.paths.splits.read_text(encoding="utf-8")))
+    manifest_path = config.paths.manifest_path(config.split_fingerprint)
+    if reuse_splits and manifest_path.is_file():
+        assignment = load_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
         selected = [ref for ref in refs if (ref.experiment, ref.participant) in assignment.keys]
         logger.info(
             "Reusing the committed split manifest: {} participants",
@@ -308,13 +309,18 @@ def prepare(
         logger.info("{}: {}", name, stats[name])
 
     config.paths.processed.mkdir(parents=True, exist_ok=True)
-    DatasetDict(splits).save_to_disk(str(config.paths.processed / "dataset"))
-    config.paths.splits.write_text(
+    dataset_dir = config.paths.dataset_dir(config.data_fingerprint)
+    dataset_dir.parent.mkdir(parents=True, exist_ok=True)
+    DatasetDict(splits).save_to_disk(str(dataset_dir))
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
         json.dumps(
             manifest(
                 assignment,
                 {
+                    "split_fingerprint": config.split_fingerprint,
                     "data_fingerprint": config.data_fingerprint,
+                    "tokenizer": config.model.tokenizer_source,
                     "stats": stats,
                     "config": config.model_dump(mode="json"),
                 },
@@ -324,11 +330,23 @@ def prepare(
         ),
         encoding="utf-8",
     )
-    logger.info("Split manifest written to {}", config.paths.splits)
+    logger.info("Split manifest written to {}", manifest_path)
+    (dataset_dir / "fingerprint.json").write_text(
+        json.dumps(
+            {
+                "data_fingerprint": config.data_fingerprint,
+                "split_fingerprint": config.split_fingerprint,
+                "tokenizer": config.model.tokenizer_source,
+                "max_seq_length": config.data.max_seq_length,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     typer.echo("")
-    typer.echo(f"Dataset: {config.paths.processed / 'dataset'}")
-    typer.echo(f"Manifest: {config.paths.splits}")
+    typer.echo(f"Dataset: {dataset_dir}")
+    typer.echo(f"Manifest: {manifest_path}")
     for name, values in stats.items():
         typer.echo(
             f"  {name:<11} {values['participants']:>5} participants · "
@@ -427,7 +445,7 @@ def train(
 
     config = _bootstrap(config_path)
     _require_matching_data(config)
-    dataset = load_from_disk(str(config.paths.processed / "dataset"))
+    dataset = load_from_disk(str(config.paths.dataset_dir(config.data_fingerprint)))
     logger.info(
         "Loaded {} train and {} validation windows",
         len(dataset["train"]),
@@ -462,7 +480,6 @@ def evaluate(
     config_path: ConfigOption = DEFAULT_CONFIG_PATH,
     adapter: AdapterOption = None,
     label: LabelOption = None,
-    model_name: ModelOption = None,
 ) -> None:
     """Measure the NLL over human choices on the validation split.
 
@@ -470,16 +487,17 @@ def evaluate(
     trained one. Without the baseline there is no way to claim the fine-tuning did
     anything at all.
 
-    The same command evaluates Minitaur-8B through ``--model``, and that is the
-    comparison carrying the thesis: same code, same split, same metric. The paper's
-    0.44 was measured on all 160 experiments with a different tokenizer, so it is a
-    landmark rather than a like-for-like number.
+    To evaluate a different model -- Minitaur-8B, say -- point ``--config`` at a
+    configuration naming it, and prepare the data with that config first. There is
+    deliberately no flag to swap the model without swapping the config: the prepared
+    dataset stores token ids, and ids belong to one vocabulary. Qwen3 id 2610 is
+    "You"; the same id under Llama's vocabulary is " askear". A model reading another
+    model's ids sees noise, produces a plausible number, and raises nothing.
 
     Args:
         config_path: Location of the YAML configuration.
         adapter: Trained adapter to load on top of the base model.
         label: Name for this result in the report.
-        model_name: Evaluate a different model entirely.
     """
     from datasets import load_from_disk
 
@@ -487,23 +505,23 @@ def evaluate(
 
     config = _bootstrap(config_path)
     _require_matching_data(config)
-    dataset = load_from_disk(str(config.paths.processed / "dataset"))["validation"]
+    dataset = load_from_disk(str(config.paths.dataset_dir(config.data_fingerprint)))["validation"]
 
-    source = str(adapter) if adapter else model_name
-    model, tokenizer = load_model(config, source=source, for_inference=True)
+    model, tokenizer = load_model(
+        config, source=str(adapter) if adapter else None, for_inference=True
+    )
 
     accumulator = _accumulate_nll(model, tokenizer, dataset, config)
-    result = accumulator.result(label or _default_label(adapter, model_name, config))
+    result = accumulator.result(label or _default_label(adapter, config))
     _write_results(config, result)
     _report(result)
 
 
-def _default_label(adapter: Path | None, model_name: str | None, config: PipelineConfig) -> str:
+def _default_label(adapter: Path | None, config: PipelineConfig) -> str:
     """Name a result so the report is still readable months later.
 
     Args:
         adapter: Adapter passed on the command line, if any.
-        model_name: Alternative model, if any.
         config: The pipeline configuration.
 
     Returns:
@@ -511,8 +529,6 @@ def _default_label(adapter: Path | None, model_name: str | None, config: Pipelin
     """
     if adapter:
         return f"{config.model.base_model} + {adapter.name}"
-    if model_name:
-        return model_name
     return f"{config.model.base_model} (baseline, no fine-tuning)"
 
 
@@ -623,16 +639,25 @@ def _require_matching_data(config: PipelineConfig) -> None:
         RuntimeError: When no dataset was prepared, or when it was prepared from a
             different data configuration.
     """
-    if not config.paths.splits.is_file():
-        msg = f"No prepared data at {config.paths.processed}. Run `prepare` first."
+    dataset_dir = config.paths.dataset_dir(config.data_fingerprint)
+    stamp = dataset_dir / "fingerprint.json"
+    if not stamp.is_file():
+        msg = (
+            f"No dataset prepared for this configuration at {dataset_dir}.\n"
+            f"  tokenizer: {config.model.tokenizer_source}\n"
+            f"  max_seq_length: {config.data.max_seq_length}\n"
+            f"Run `prepare --config <this config>` first. A dataset prepared for a "
+            f"different model cannot be reused: the stored token ids belong to that "
+            f"model's vocabulary and mean something else under another one."
+        )
         raise RuntimeError(msg)
 
-    stored = json.loads(config.paths.splits.read_text(encoding="utf-8")).get("data_fingerprint")
-    if stored != config.data_fingerprint:
+    stored = json.loads(stamp.read_text(encoding="utf-8"))
+    if stored.get("data_fingerprint") != config.data_fingerprint:
         msg = (
-            f"The prepared data was built from a different configuration "
-            f"(fingerprint {stored}, config wants {config.data_fingerprint}). "
-            f"Run `prepare` again before training or evaluating."
+            f"The dataset at {dataset_dir} carries fingerprint "
+            f"{stored.get('data_fingerprint')} but the config wants "
+            f"{config.data_fingerprint}. Run `prepare` again."
         )
         raise RuntimeError(msg)
 
@@ -720,11 +745,10 @@ def _ensure_prepared(config_path: Path, config: PipelineConfig) -> None:
         config_path: Path of the configuration file, passed on to ``prepare``.
         config: The parsed configuration.
     """
-    stored = None
-    if config.paths.splits.is_file():
-        stored = json.loads(config.paths.splits.read_text(encoding="utf-8")).get("data_fingerprint")
-    if stored == config.data_fingerprint:
+    stamp = config.paths.dataset_dir(config.data_fingerprint) / "fingerprint.json"
+    if stamp.is_file():
         return
+    stored = None
     logger.info("Data configuration changed ({} -> {}); preparing", stored, config.data_fingerprint)
     _run_stage(["prepare", "--config", str(config_path)])
 

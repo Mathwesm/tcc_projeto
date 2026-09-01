@@ -1,0 +1,31 @@
+# Minitaur-8B: the 8B version of Centaur, published by the paper's own authors with
+# the same recipe. This is the comparison that carries the thesis, because it runs
+# through the same code, on the same held-out participants, under the same metric.
+#
+# It needs its OWN config, not a --model flag, because the prepared dataset stores
+# token ids and ids belong to one vocabulary. Qwen3 id 2610 is "You"; the same id read
+# under Llama's vocabulary is " askear". A model fed another model's ids sees noise,
+# reports a plausible number, and raises nothing. Preparing with this config produces a
+# second tokenization of the SAME participants -- the split fingerprint is unchanged,
+# so the held-out people are identical and only the tokenization differs.
+#
+#   poetry run python -m centauro_lite prepare  --config configs/minitaur.yaml
+#   poetry run python -m centauro_lite evaluate --config configs/minitaur.yaml --label minitaur-8b
+#
+# Standing caveat for the write-up: NLL per token is never perfectly comparable across
+# tokenizers, since each cuts the text into different pieces. Feeding each model its own
+# vocabulary is the floor, not a fix for that. Declare it in the discussion.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+model:
+  base_model: marcelbinz/Llama-3.1-Minitaur-8B

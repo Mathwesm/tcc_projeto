@@ -182,6 +182,10 @@ Rodada em 2026-09-01 numa T4 do Kaggle, 44 minutos, 1 epoca, 49 passos:
 | Qwen3-1.7B sem treino | 0,9240 | — |
 | Qwen3-1.7B + QLoRA rank 8 | **0,6421** | **−30,5%** |
 
+O Minitaur-8B foi medido na mesma rodada e deu 1,0595, **mas esse numero e invalido**
+e foi descartado: ele leu o dataset tokenizado para o Qwen3. Ver "Vocabularios nao se
+misturam" abaixo.
+
 Melhorou nos tres dominios, nao so na media: `peterson2021using` −40,7%,
 `kool2016when` −28,6% e −27,1%, `badham2017deficits` −19,8%. Se o ganho viesse de um
 experimento so, seria o desbalanceamento voltando pela janela.
@@ -211,6 +215,43 @@ repetidamente no mesmo processo fragmenta a VRAM, e numa placa de 16 GB e a quar
 rodada que morre. Rodadas ja medidas sao puladas, entao uma sessao que cai no meio
 continua de onde parou.
 
+### Vocabularios nao se misturam
+
+O dataset preparado guarda **ids de token**, e um id so significa alguma coisa dentro de
+um vocabulario. Os mesmos ids do nosso dataset, decodificados pelos dois tokenizadores:
+
+| tokenizador | texto |
+|---|---|
+| Qwen3 (o que gravou) | `You will be shown several examples of geometric objects.` |
+| Llama 3.1 (Minitaur) | `askear be.awtnav ptr of Laden_len == guard Am is to.path` |
+
+Um modelo lendo os ids de outro ve ruido, devolve um numero plausivel e **nao levanta
+erro**. Foi exatamente o que aconteceu na primeira medicao do Minitaur.
+
+Por isso nao existe um `--model` no `evaluate`. Avaliar outro modelo exige um arquivo de
+configuracao proprio, e preparar os dados com ele:
+
+```bash
+poetry run python -m centauro_lite prepare  --config configs/minitaur.yaml
+poetry run python -m centauro_lite evaluate --config configs/minitaur.yaml --label minitaur-8b
+```
+
+Isso produz uma segunda tokenizacao dos **mesmos participantes** — e por isso existem
+dois fingerprints:
+
+- **`split_fingerprint`** identifica *quais pessoas* entram, e ignora tokenizador e
+  tamanho de janela. Default e Minitaur compartilham `2379f5392193`: mesmos participantes
+  de validacao, exatamente.
+- **`data_fingerprint`** identifica *como o texto virou tokens*. Default `8c70b49e3cf5`,
+  Minitaur `13256cacdbb0` — datasets separados em disco, sem se sobrescrever.
+
+Se os dois mudassem juntos, dois resultados difeririam por dois motivos ao mesmo tempo e
+nenhum poderia ser atribuido ao modelo.
+
+Ressalva que fica na discussao do TCC: mesmo feito assim, NLL por token nunca e
+perfeitamente comparavel entre tokenizadores, porque cada um corta o texto em pedacos
+diferentes. Dar a cada modelo o seu vocabulario e o piso, nao a solucao.
+
 ### A protecao do fingerprint
 
 `data_fingerprint` e o hash de tudo que muda o dataset preparado: experimentos, tamanho
@@ -236,7 +277,7 @@ diferentes. Por isso a comparacao central e outra:
 |---|---|---|
 | Qwen3-1.7B cru | `evaluate` sem adapter | piso — de onde partimos |
 | Qwen3-1.7B + QLoRA | `evaluate --adapter ...` | o resultado do trabalho |
-| **Minitaur-8B** | `evaluate --model marcelbinz/Llama-3.1-Minitaur-8B` | **teto e comparacao justa** |
+| **Minitaur-8B** | `prepare` + `evaluate` com `configs/minitaur.yaml` | **teto e comparacao justa** |
 | Centaur 70B = 0,44 | valor fixo do paper | baliza, comparacao declaradamente indireta |
 
 O Minitaur e a versao 8B do Centaur publicada pelos proprios autores, com a mesma

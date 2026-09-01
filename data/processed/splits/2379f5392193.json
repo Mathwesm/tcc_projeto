@@ -2561,6 +2561,9 @@
       "validation": 38
     }
   },
+  "split_fingerprint": "2379f5392193",
+  "data_fingerprint": "8c70b49e3cf5",
+  "tokenizer": "unsloth/Qwen3-1.7B",
   "stats": {
     "train": {
       "participants": 572,

@@ -40,3 +40,9 @@ repos:
     rev: v1.5.0
     hooks:
       - id: detect-secrets
+        # The split manifests are generated JSON holding participant ids from a public
+        # dataset plus two configuration hashes. The hashes read as high-entropy hex
+        # and trip the scanner every time a config changes. Excluding the one generated
+        # path keeps the scanner meaningful everywhere a real secret could appear,
+        # rather than training everyone to ignore its output.
+        exclude: ^data/processed/splits/.*\.json$

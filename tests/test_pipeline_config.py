@@ -165,3 +165,69 @@ def test_every_sweep_config_shares_the_default_data_configuration() -> None:
     assert configs, "the sweep directory is empty"
     for path in configs:
         assert PipelineConfig.from_yaml(path).data_fingerprint == default.data_fingerprint, path
+
+
+def test_a_different_model_keeps_the_same_participants() -> None:
+    """Evaluating a second model must not also move the held-out people.
+
+    If the split changed at the same time as the tokenizer, the two results would
+    differ for two reasons at once and neither could be attributed to the model.
+    """
+    from centauro_lite.models.pipeline_config import ModelConfig
+
+    qwen = PipelineConfig(model=ModelConfig(base_model="unsloth/Qwen3-1.7B"))
+    llama = PipelineConfig(model=ModelConfig(base_model="marcelbinz/Llama-3.1-Minitaur-8B"))
+    assert qwen.split_fingerprint == llama.split_fingerprint
+    assert qwen.data_fingerprint != llama.data_fingerprint
+
+
+def test_a_different_window_keeps_the_same_participants() -> None:
+    """Window size changes the tokenization, never who is held out."""
+    short = PipelineConfig(data=DataConfig(max_seq_length=2048))
+    long = PipelineConfig(data=DataConfig(max_seq_length=4096))
+    assert short.split_fingerprint == long.split_fingerprint
+    assert short.data_fingerprint != long.data_fingerprint
+
+
+def test_changing_the_selection_moves_both_fingerprints() -> None:
+    """Different participants means a different split and different windows."""
+    one = PipelineConfig(experiments=ExperimentSelection(risky_choice=("a",)))
+    two = PipelineConfig(experiments=ExperimentSelection(risky_choice=("a", "b")))
+    assert one.split_fingerprint != two.split_fingerprint
+    assert one.data_fingerprint != two.data_fingerprint
+
+
+def test_the_subsampling_budget_moves_the_split() -> None:
+    """A different choice budget selects different participants."""
+    assert (
+        PipelineConfig(data=DataConfig(max_choices_per_domain=30000)).split_fingerprint
+        != PipelineConfig(data=DataConfig(max_choices_per_domain=10000)).split_fingerprint
+    )
+
+
+def test_datasets_of_different_tokenizations_do_not_collide() -> None:
+    """Two tokenizations must land in different directories.
+
+    A shared directory would mean the second `prepare` either overwrites the first
+    model's token ids or is silently skipped, and one of the two models would then be
+    evaluated on ids from the other's vocabulary.
+    """
+    from centauro_lite.models.pipeline_config import ModelConfig
+
+    config = PipelineConfig()
+    other = PipelineConfig(model=ModelConfig(base_model="marcelbinz/Llama-3.1-Minitaur-8B"))
+    assert config.paths.dataset_dir(config.data_fingerprint) != other.paths.dataset_dir(
+        other.data_fingerprint
+    )
+
+
+def test_the_minitaur_config_shares_the_split_and_not_the_tokenization() -> None:
+    """The real config file, checked against the real default.
+
+    This is the comparison the thesis rests on: same held-out participants, each model
+    reading its own vocabulary.
+    """
+    default = PipelineConfig.from_yaml(Path("configs/default.yaml"))
+    minitaur = PipelineConfig.from_yaml(Path("configs/minitaur.yaml"))
+    assert minitaur.split_fingerprint == default.split_fingerprint
+    assert minitaur.data_fingerprint != default.data_fingerprint

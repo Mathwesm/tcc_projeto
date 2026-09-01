@@ -33,8 +33,10 @@ data/processed/*
 .idea/
 .DS_Store
 
-# The split manifest is tracked on purpose. It is small, contains only ids from a
+# The split manifests are tracked on purpose. It is small, contains only ids from a
 # public dataset, and is what lets a run on Kaggle prove it used the same
 # train/validation split as the run here -- a seed alone cannot, because it only
 # reproduces a permutation of whatever row order the library happened to produce.
-!data/processed/splits.json
+!data/processed/splits/
+data/processed/splits/*
+!data/processed/splits/*.json

@@ -23,6 +23,19 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 DEFAULT_CONFIG_PATH = Path("configs/default.yaml")
 
 
+def _short_hash(payload: dict[str, Any]) -> str:
+    """Hash a configuration fragment into a stable short identifier.
+
+    Args:
+        payload: JSON-serialisable fragment.
+
+    Returns:
+        The first twelve hex characters of its SHA-256.
+    """
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
 class ExperimentSelection(BaseModel):
     """Target experiments of the case study, grouped by cognitive domain.
 
@@ -188,13 +201,42 @@ class PathsConfig(BaseModel):
     outputs: Path = Path("outputs")
 
     @property
-    def splits(self) -> Path:
-        """Path of the split manifest recording who is in train and validation.
+    def splits_dir(self) -> Path:
+        """Directory holding the split manifests.
 
         Returns:
-            JSON path inside the processed directory.
+            Path inside the processed directory. Manifests are small and are tracked
+            in git; the tokenized datasets beside them are not.
         """
-        return self.processed / "splits.json"
+        return self.processed / "splits"
+
+    def manifest_path(self, split_fingerprint: str) -> Path:
+        """Path of the manifest for one participant selection.
+
+        Args:
+            split_fingerprint: Value of :attr:`PipelineConfig.split_fingerprint`.
+
+        Returns:
+            The JSON path.
+        """
+        return self.splits_dir / f"{split_fingerprint}.json"
+
+    def dataset_dir(self, data_fingerprint: str) -> Path:
+        """Path of one tokenized dataset.
+
+        Args:
+            data_fingerprint: Value of :attr:`PipelineConfig.data_fingerprint`.
+
+        Returns:
+            The directory the dataset is saved to.
+
+        Note:
+            Keyed by fingerprint so the same participants tokenized by two different
+            models can sit side by side. A single shared directory would mean
+            evaluating a second model either silently reuses the first model's token
+            ids or destroys them.
+        """
+        return self.processed / data_fingerprint
 
     @property
     def catalog(self) -> Path:
@@ -218,31 +260,54 @@ class PipelineConfig(BaseModel):
     paths: PathsConfig = PathsConfig()
 
     @property
-    def data_fingerprint(self) -> str:
-        """Short hash of everything that changes the prepared dataset.
+    def split_fingerprint(self) -> str:
+        """Short hash of everything that decides *which participants* are used.
 
         Returns:
-            Twelve hex characters identifying this data configuration.
+            Twelve hex characters identifying this participant selection.
 
         Note:
-            This exists because the failure it catches is silent. Raise
-            ``max_seq_length`` in a sweep config and the dataset on disk is still
-            tokenized at the old length: training runs, evaluation runs, and the
-            reported NLL is measured on windows the configuration says are a different
-            size. Nothing errors. Stamping the fingerprint into the split manifest and
-            checking it before every train and evaluate turns that into a refusal to
-            start.
-
-            The tokenizer is part of the hash because two tokenizers cut the same text
-            into different tokens, and the metric is per token.
+            Deliberately excludes the tokenizer and the window size. Evaluating a
+            second model means tokenizing the same sessions differently, and if the
+            held-out participants changed at the same time, the two numbers would
+            differ for two reasons at once and neither could be attributed. Sharing
+            this fingerprint is what keeps "same split" true across tokenizers.
         """
         payload = {
             "experiments": self.experiments.model_dump(mode="json"),
-            "data": self.data.model_dump(mode="json", exclude={"catalog_sample_per_experiment"}),
+            "dataset": [self.data.dataset_name, self.data.dataset_split],
+            "val_fraction": self.data.val_fraction,
+            "seed": self.data.seed,
+            "max_choices_per_domain": self.data.max_choices_per_domain,
+        }
+        return _short_hash(payload)
+
+    @property
+    def data_fingerprint(self) -> str:
+        """Short hash of everything that changes the prepared token windows.
+
+        Returns:
+            Twelve hex characters identifying this tokenized dataset.
+
+        Note:
+            Two failures hide behind this. Raise ``max_seq_length`` and the dataset on
+            disk stays tokenized at the old length: both stages run and the reported
+            NLL describes windows of a size the configuration says they are not.
+            Change the model and the stored token ids stop meaning what the new model
+            thinks they mean -- Qwen3 id 2610 is "You", the same id under Llama's
+            vocabulary is " askear". Nothing raises in either case; the number simply
+            stops being about the experiment.
+
+            Datasets are stored under this fingerprint so several tokenizations of the
+            same participants can coexist.
+        """
+        payload = {
+            "split": self.split_fingerprint,
+            "max_seq_length": self.data.max_seq_length,
+            "window_stride": self.data.window_stride,
             "tokenizer": self.model.tokenizer_source,
         }
-        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+        return _short_hash(payload)
 
     @classmethod
     def from_yaml(cls, path: Path = DEFAULT_CONFIG_PATH) -> PipelineConfig:
