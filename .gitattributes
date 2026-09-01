@@ -1,0 +1,9 @@
+# Normalize line endings. Authored on Windows, validated on a Linux runner:
+# without this the diff fills with CRLF noise and the formatter fights the CI.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.parquet binary
+*.zip binary
+poetry.lock -diff

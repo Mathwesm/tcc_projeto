@@ -1,0 +1,131 @@
+[project]
+name = "tcc_projeto"
+version = "0.1.0"
+description = "Fine-tuning QLoRA de modelos pequenos sobre Psych-101 para prever comportamento humano"
+readme = "README.md"
+requires-python = ">=3.12,<4.0"
+dependencies = [
+    "loguru (>=0.7.2,<0.8.0)",
+    "pydantic (>=2.9,<3.0)",
+    "pydantic-settings (>=2.5,<3.0)",
+    "httpx (>=0.27,<0.29)",
+    "tenacity (>=9.0,<10.0)",
+    "datasets (>=3.0)",
+    "transformers (>=4.51)",
+    "pandas (>=2.2)",
+    "pyarrow (>=17)",
+    "numpy (>=1.26)",
+    "typer (>=0.15)",
+    "pyyaml (>=6.0)",
+    "types-pyyaml (>=6.0.12.20260815,<7.0.0.0)",
+]
+
+[tool.poetry]
+packages = [{ include = "centauro_lite", from = "src" }]
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.8"
+mypy = "^1.13"
+pytest = "^8.3"
+pytest-cov = "^6.0"
+pytest-mock = "^3.14"
+hypothesis = "^6.115"
+respx = "^0.21"
+freezegun = "^1.5"
+pre-commit = "^4.0"
+detect-secrets = "^1.5"
+poethepoet = "^0.32"
+
+# Task shortcuts that behave identically on Windows, macOS and Linux. A Makefile
+# would not: Windows has no make. Run them with `poetry run poe <task>`.
+pandas-stubs = "^3.0.5.260730"
+[tool.poe.tasks]
+fmt = "ruff format ."
+lint = "ruff check --fix ."
+types = "mypy src/"
+test = "pytest"
+start = "python -m centauro_lite"
+eda = "python -m centauro_lite eda"
+prepare = "python -m centauro_lite prepare"
+train = "python -m centauro_lite train"
+evaluate = "python -m centauro_lite evaluate"
+
+[tool.poe.tasks.gate]
+help = "Run the full quality gate, in the same order as the CI"
+sequence = ["fmt", "lint", "types", "test"]
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+# --------------------------------------------------------------------------------------
+# Ruff: the linter enforces the project rules so nobody has to remember them.
+# T20 bans print (loguru instead) | DTZ bans naive datetime | PTH bans os.path
+# D enforces Google docstrings | S is bandit | ERA finds commented-out code
+# --------------------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "N", "D", "UP", "B", "A", "C4",
+    "DTZ", "T20", "SIM", "ARG", "PTH", "ERA", "PL", "RUF", "S", "C90",
+]
+ignore = [
+    "D107",    # __init__ docstring lives on the class
+    "D203",    # conflicts with D211
+    "D213",    # conflicts with D212
+    "PLR0913", # argument count is judged in review, not by a counter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S101 is assert, which is how pytest works. S105/S106 flag the fake credentials
+# that security tests need by definition.
+"tests/**" = ["S101", "S105", "S106", "D100", "D103", "D104", "PLR2004", "ARG001"]
+"scripts/**" = ["T20"]
+# In a notebook, print IS the output channel and the shell escapes are the point;
+# T20 exists to force loguru in code that runs unattended, which this is not.
+"notebooks/**" = ["T20", "E501", "E402", "D103", "INP001"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+# These ship no type information usable under strict mode. Narrow protocols in
+# centauro_lite.core keep the untyped surface at the edges instead of letting it
+# spread into the pipeline logic.
+[[tool.mypy.overrides]]
+# torch and unsloth are absent here on purpose: the data stages run on a laptop
+# without a GPU, and only the training environment installs them.
+module = ["datasets.*", "transformers.*", "unsloth.*", "torch.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --cov=src --cov-report=term-missing"
+filterwarnings = ["error"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

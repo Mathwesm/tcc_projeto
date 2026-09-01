@@ -1,0 +1,40 @@
+# Environment
+.env
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.hypothesis/
+htmlcov/
+.coverage
+.coverage.*
+
+# Runtime artifacts
+logs/
+*.log
+data/*
+!data/processed/
+data/processed/*
+
+# tests/fixtures/ is intentionally NOT ignored: the CI needs those samples to run.
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
+
+# The split manifest is tracked on purpose. It is small, contains only ids from a
+# public dataset, and is what lets a run on Kaggle prove it used the same
+# train/validation split as the run here -- a seed alone cannot, because it only
+# reproduces a permutation of whatever row order the library happened to produce.
+!data/processed/splits.json

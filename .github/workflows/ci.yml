@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality-gate:
+    # Pull requests run on Linux alone: fast feedback, minimal quota. Pushes to main
+    # fan out to all three systems, because that is where portability bugs surface —
+    # path separators, cp1252 vs UTF-8, CRLF, case-sensitive filenames. macOS minutes
+    # bill at 10x on private repositories, which is exactly why this is not the
+    # default on every commit.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: >-
+          ${{ github.ref == 'refs/heads/main'
+          && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]')
+          || fromJSON('["ubuntu-latest"]') }}
+
+    runs-on: ${{ matrix.os }}
+
+    # The Windows runner defaults to PowerShell, where these commands would need
+    # different syntax. Pinning bash keeps one set of steps for all three systems.
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Cache virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --no-interaction
+
+      # Mirrors the local gate exactly. A green machine and a red CI means the
+      # configuration diverged, and that is a bug to fix rather than to work around.
+      - name: Format check
+        run: poetry run ruff format --check .
+
+      - name: Lint
+        run: poetry run ruff check .
+
+      - name: Type check
+        run: poetry run mypy src/
+
+      - name: Tests
+        run: poetry run pytest
