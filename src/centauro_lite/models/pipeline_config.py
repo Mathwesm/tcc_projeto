@@ -12,6 +12,8 @@ and the default silently used, which is the same failure wearing a different hat
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Self
 
@@ -214,6 +216,33 @@ class PipelineConfig(BaseModel):
     model: ModelConfig = ModelConfig()
     training: TrainingConfig = TrainingConfig()
     paths: PathsConfig = PathsConfig()
+
+    @property
+    def data_fingerprint(self) -> str:
+        """Short hash of everything that changes the prepared dataset.
+
+        Returns:
+            Twelve hex characters identifying this data configuration.
+
+        Note:
+            This exists because the failure it catches is silent. Raise
+            ``max_seq_length`` in a sweep config and the dataset on disk is still
+            tokenized at the old length: training runs, evaluation runs, and the
+            reported NLL is measured on windows the configuration says are a different
+            size. Nothing errors. Stamping the fingerprint into the split manifest and
+            checking it before every train and evaluate turns that into a refusal to
+            start.
+
+            The tokenizer is part of the hash because two tokenizers cut the same text
+            into different tokens, and the metric is per token.
+        """
+        payload = {
+            "experiments": self.experiments.model_dump(mode="json"),
+            "data": self.data.model_dump(mode="json", exclude={"catalog_sample_per_experiment"}),
+            "tokenizer": self.model.tokenizer_source,
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
     @classmethod
     def from_yaml(cls, path: Path = DEFAULT_CONFIG_PATH) -> PipelineConfig:

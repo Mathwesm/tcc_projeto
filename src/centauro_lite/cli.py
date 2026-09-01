@@ -9,6 +9,8 @@ raising anything.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -27,6 +29,7 @@ from centauro_lite.core.metrics import (
     NllResult,
     scored_token_count,
 )
+from centauro_lite.core.reporting import format_table, load_rows, rank, with_improvements
 from centauro_lite.core.sampling import ParticipantRef, balance_domains, choices_per_domain
 from centauro_lite.core.splits import (
     leaked_participants,
@@ -58,6 +61,16 @@ ReuseSplitsOption = Annotated[
         "--reuse-splits/--resample",
         help="Reuse the committed split manifest instead of sampling again.",
     ),
+]
+
+SweepDirOption = Annotated[
+    Path,
+    typer.Option("--configs", help="Directory of YAML files, one per sweep run."),
+]
+
+ForceOption = Annotated[
+    bool,
+    typer.Option("--force", help="Re-run configurations that already have a result."),
 ]
 
 OutputOption = Annotated[
@@ -298,7 +311,14 @@ def prepare(
     DatasetDict(splits).save_to_disk(str(config.paths.processed / "dataset"))
     config.paths.splits.write_text(
         json.dumps(
-            manifest(assignment, {"stats": stats, "config": config.model_dump(mode="json")}),
+            manifest(
+                assignment,
+                {
+                    "data_fingerprint": config.data_fingerprint,
+                    "stats": stats,
+                    "config": config.model_dump(mode="json"),
+                },
+            ),
             indent=2,
             ensure_ascii=False,
         ),
@@ -406,6 +426,7 @@ def train(
     from centauro_lite.services.modeling import attach_adapters, build_trainer, load_model
 
     config = _bootstrap(config_path)
+    _require_matching_data(config)
     dataset = load_from_disk(str(config.paths.processed / "dataset"))
     logger.info(
         "Loaded {} train and {} validation windows",
@@ -465,6 +486,7 @@ def evaluate(
     from centauro_lite.services.modeling import load_model
 
     config = _bootstrap(config_path)
+    _require_matching_data(config)
     dataset = load_from_disk(str(config.paths.processed / "dataset"))["validation"]
 
     source = str(adapter) if adapter else model_name
@@ -557,7 +579,7 @@ def _write_results(config: PipelineConfig, result: NllResult) -> None:
     path = config.paths.outputs / "eval_results.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     results = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    results[result.label] = result.model_dump()
+    results[result.label] = result.model_dump() | {"data_fingerprint": config.data_fingerprint}
     results["_references"] = result.comparison()
     path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Results written to {}", path)
@@ -584,6 +606,214 @@ def _report(result: NllResult) -> None:
     typer.echo(f"  Centaur 70B                    {CENTAUR_NLL:.2f}")
     typer.echo(f"  Specialised cognitive models   {COGNITIVE_MODELS_NLL:.2f}")
     typer.echo(f"  Llama 3.1 70B, no fine-tuning  {LLAMA_BASE_NLL:.2f}")
+
+
+def _require_matching_data(config: PipelineConfig) -> None:
+    """Refuse to run when the prepared data does not match the configuration.
+
+    Raising here is the whole point. Raise ``max_seq_length`` in a config and the
+    dataset on disk is still tokenized at the old length: training would run,
+    evaluation would run, and the reported NLL would describe windows of a size the
+    configuration says they are not. Nothing else in the stack notices.
+
+    Args:
+        config: The pipeline configuration.
+
+    Raises:
+        RuntimeError: When no dataset was prepared, or when it was prepared from a
+            different data configuration.
+    """
+    if not config.paths.splits.is_file():
+        msg = f"No prepared data at {config.paths.processed}. Run `prepare` first."
+        raise RuntimeError(msg)
+
+    stored = json.loads(config.paths.splits.read_text(encoding="utf-8")).get("data_fingerprint")
+    if stored != config.data_fingerprint:
+        msg = (
+            f"The prepared data was built from a different configuration "
+            f"(fingerprint {stored}, config wants {config.data_fingerprint}). "
+            f"Run `prepare` again before training or evaluating."
+        )
+        raise RuntimeError(msg)
+
+
+@app.command()
+def sweep(
+    config_dir: SweepDirOption = Path("configs/sweep"),
+    base_config: ConfigOption = DEFAULT_CONFIG_PATH,
+    force: ForceOption = False,
+) -> None:
+    """Train and evaluate every configuration in a directory, then report.
+
+    Each configuration runs in its own subprocess. That is not ceremony: loading and
+    discarding quantized models repeatedly in one process leaves VRAM fragmented, and
+    on a 16GB card the fourth run is the one that fails. A fresh process per run also
+    means one crash costs one row instead of the whole sweep.
+
+    Completed runs are skipped, so a session that dies halfway resumes where it
+    stopped rather than repeating hours of finished work.
+
+    Args:
+        config_dir: Directory of YAML files, one per experiment.
+        base_config: Configuration used for the shared baseline measurement.
+        force: Re-run configurations that already have a result.
+    """
+    configs = sorted(config_dir.glob("*.yaml"))
+    if not configs:
+        typer.echo(f"No configurations found in {config_dir}")
+        raise typer.Exit(code=1)
+
+    config = _bootstrap(base_config)
+    done = _completed_runs(config)
+    logger.info("Sweep: {} configurations, {} already done", len(configs), len(done))
+
+    _ensure_prepared(base_config, config)
+    baseline_label = f"baseline@{config.data_fingerprint}"
+    if baseline_label not in done or force:
+        _run_stage(["evaluate", "--config", str(base_config), "--label", baseline_label])
+
+    failures: list[str] = []
+    for path in configs:
+        run_id = path.stem
+        if run_id in done and not force:
+            logger.info("Skipping {} (already measured)", run_id)
+            continue
+
+        run_config = PipelineConfig.from_yaml(path)
+        _ensure_prepared(path, run_config)
+
+        adapter = config.paths.outputs / run_id / "adapter"
+        logger.info("=== {} ===", run_id)
+        if not _run_stage(["train", "--config", str(path), "--output", str(adapter)]):
+            failures.append(run_id)
+            continue
+        if not _run_stage(
+            ["evaluate", "--config", str(path), "--adapter", str(adapter), "--label", run_id]
+        ):
+            failures.append(run_id)
+
+    if failures:
+        typer.echo(f"\nFailed: {', '.join(failures)}")
+    report(base_config)
+
+
+def _completed_runs(config: PipelineConfig) -> set[str]:
+    """Labels already present in the results file.
+
+    Args:
+        config: The pipeline configuration.
+
+    Returns:
+        The set of labels already measured.
+    """
+    path = config.paths.outputs / "eval_results.json"
+    if not path.is_file():
+        return set()
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    return {key for key in stored if not key.startswith("_")}
+
+
+def _ensure_prepared(config_path: Path, config: PipelineConfig) -> None:
+    """Rebuild the dataset when the configuration asks for different data.
+
+    Args:
+        config_path: Path of the configuration file, passed on to ``prepare``.
+        config: The parsed configuration.
+    """
+    stored = None
+    if config.paths.splits.is_file():
+        stored = json.loads(config.paths.splits.read_text(encoding="utf-8")).get("data_fingerprint")
+    if stored == config.data_fingerprint:
+        return
+    logger.info("Data configuration changed ({} -> {}); preparing", stored, config.data_fingerprint)
+    _run_stage(["prepare", "--config", str(config_path)])
+
+
+def _run_stage(arguments: list[str]) -> bool:
+    """Run one pipeline stage in a fresh subprocess.
+
+    Args:
+        arguments: CLI arguments after the module name.
+
+    Returns:
+        ``True`` when the stage exited cleanly.
+    """
+    command = [sys.executable, "-m", "centauro_lite", *arguments]
+    logger.info("$ {}", " ".join(command))
+    completed = subprocess.run(command, check=False)  # noqa: S603 - arguments are ours
+    if completed.returncode != 0:
+        logger.error("Stage failed with exit code {}", completed.returncode)
+    return completed.returncode == 0
+
+
+@app.command()
+def report(config_path: ConfigOption = DEFAULT_CONFIG_PATH) -> None:
+    """Render the comparison table and the charts from the accumulated results.
+
+    Args:
+        config_path: Location of the YAML configuration.
+    """
+    config = _bootstrap(config_path)
+    path = config.paths.outputs / "eval_results.json"
+    if not path.is_file():
+        typer.echo(f"No results at {path}. Run `evaluate` first.")
+        raise typer.Exit(code=1)
+
+    rows = rank(with_improvements(load_rows(json.loads(path.read_text(encoding="utf-8")))))
+    table = format_table(rows)
+    typer.echo("")
+    typer.echo(table)
+
+    (config.paths.outputs / "report.txt").write_text(table + "\n", encoding="utf-8")
+    _plot(rows, config.paths.outputs / "figures")
+
+
+def _plot(rows: Any, directory: Path) -> None:
+    """Write the ablation and per-experiment charts.
+
+    Args:
+        rows: Ranked report rows.
+        directory: Where the figures go.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")  # no display on a notebook runner or a CI machine
+    import matplotlib.pyplot as plt
+
+    directory.mkdir(parents=True, exist_ok=True)
+
+    figure, axes = plt.subplots(figsize=(9, max(3, 0.45 * len(rows))))
+    labels = [row.label for row in rows][::-1]
+    values = [row.nll for row in rows][::-1]
+    axes.barh(labels, values, color="#4C72B0")
+    axes.axvline(CENTAUR_NLL, color="#C44E52", linestyle="--", label=f"Centaur 70B ({CENTAUR_NLL})")
+    axes.set_xlabel("NLL over human choices (lower is better)")
+    axes.set_title("Ablation: every run on the same held-out participants")
+    axes.legend()
+    figure.savefig(directory / "ablation.png", dpi=150, bbox_inches="tight")
+    plt.close(figure)
+
+    experiments = sorted({name for row in rows for name in row.per_experiment})
+    if not experiments:
+        return
+    figure, axes = plt.subplots(figsize=(10, 5))
+    width = 0.8 / max(1, len(rows))
+    for index, row in enumerate(rows):
+        positions = [position + index * width for position in range(len(experiments))]
+        axes.bar(
+            positions,
+            [row.per_experiment.get(name, 0.0) for name in experiments],
+            width=width,
+            label=row.label,
+        )
+    axes.set_xticks([position + 0.4 for position in range(len(experiments))])
+    axes.set_xticklabels(experiments, rotation=20, ha="right")
+    axes.set_ylabel("NLL")
+    axes.set_title("Per experiment: the average hides where a model actually wins")
+    axes.legend(fontsize="small")
+    figure.savefig(directory / "per_experiment.png", dpi=150, bbox_inches="tight")
+    plt.close(figure)
+    logger.info("Figures written to {}", directory)
 
 
 def main() -> int:

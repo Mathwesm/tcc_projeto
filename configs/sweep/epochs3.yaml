@@ -1,0 +1,20 @@
+# Three epochs instead of one.
+# The first run reached 0.6421 in 49 steps. That is barely any training, so the
+# cheapest possible question is whether the curve had simply not flattened yet.
+#
+# Only the fields below differ from configs/default.yaml. One variable per run:
+# a table where two things moved at once cannot attribute the difference to either.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+training:
+  num_epochs: 3.0

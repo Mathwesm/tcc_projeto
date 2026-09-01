@@ -1,0 +1,21 @@
+# LoRA rank 64.
+# Still under 1% of the model's parameters. If this is where returns stop, that
+# ceiling is a finding: it says the limit is the data, not the adapter.
+#
+# Only the fields below differ from configs/default.yaml. One variable per run:
+# a table where two things moved at once cannot attribute the difference to either.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+model:
+  lora_rank: 64
+  lora_alpha: 128

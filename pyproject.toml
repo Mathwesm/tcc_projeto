@@ -18,6 +18,7 @@ dependencies = [
     "typer (>=0.15)",
     "pyyaml (>=6.0)",
     "types-pyyaml (>=6.0.12.20260815,<7.0.0.0)",
+    "matplotlib (>=3.9)",
 ]
 
 [tool.poetry]
@@ -49,6 +50,8 @@ eda = "python -m centauro_lite eda"
 prepare = "python -m centauro_lite prepare"
 train = "python -m centauro_lite train"
 evaluate = "python -m centauro_lite evaluate"
+sweep = "python -m centauro_lite sweep"
+report = "python -m centauro_lite report"
 
 [tool.poe.tasks.gate]
 help = "Run the full quality gate, in the same order as the CI"
@@ -87,7 +90,9 @@ ignore = [
 "scripts/**" = ["T20"]
 # In a notebook, print IS the output channel and the shell escapes are the point;
 # T20 exists to force loguru in code that runs unattended, which this is not.
-"notebooks/**" = ["T20", "E501", "E402", "D103", "INP001"]
+# A004 flags IPython's display() as shadowing a builtin; in a notebook that name is
+# the convention, and renaming it would make the cell harder to read, not safer.
+"notebooks/**" = ["T20", "E501", "E402", "D103", "INP001", "A004"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

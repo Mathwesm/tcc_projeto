@@ -100,3 +100,68 @@ def test_config_is_immutable() -> None:
     config = PipelineConfig()
     with pytest.raises(ValidationError):
         config.data.max_seq_length = 512  # type: ignore[misc]
+
+
+def test_fingerprint_changes_with_window_size() -> None:
+    """Raising max_seq_length must invalidate the prepared data.
+
+    Without this, the dataset on disk stays tokenized at the old length while the
+    config says otherwise: training runs, evaluation runs, and the reported NLL
+    describes windows of a size nobody asked for. Nothing else in the stack notices.
+    """
+    assert (
+        PipelineConfig(data=DataConfig(max_seq_length=2048)).data_fingerprint
+        != PipelineConfig(data=DataConfig(max_seq_length=4096)).data_fingerprint
+    )
+
+
+def test_fingerprint_changes_with_the_tokenizer() -> None:
+    """Two tokenizers cut the same text differently, and the metric is per token."""
+    from centauro_lite.models.pipeline_config import ModelConfig
+
+    assert (
+        PipelineConfig(model=ModelConfig(base_model="unsloth/Qwen3-1.7B")).data_fingerprint
+        != PipelineConfig(model=ModelConfig(base_model="unsloth/Qwen3-0.6B")).data_fingerprint
+    )
+
+
+def test_fingerprint_changes_with_the_experiment_selection() -> None:
+    """Adding an experiment changes what is measured, so results must not be pooled."""
+    assert (
+        PipelineConfig(experiments=ExperimentSelection(risky_choice=("a",))).data_fingerprint
+        != PipelineConfig(experiments=ExperimentSelection(risky_choice=("a", "b"))).data_fingerprint
+    )
+
+
+def test_fingerprint_ignores_the_training_hyperparameters() -> None:
+    """The point of a sweep is many training configs sharing one dataset.
+
+    If the learning rate changed the fingerprint, every run would rebuild the data and
+    no two rows would be comparable.
+    """
+    assert (
+        PipelineConfig(training=TrainingConfig(learning_rate=5e-5)).data_fingerprint
+        == PipelineConfig(training=TrainingConfig(learning_rate=2e-4)).data_fingerprint
+    )
+
+
+def test_fingerprint_ignores_the_catalog_sample_size() -> None:
+    """That knob only affects the EDA statistics, never the prepared windows."""
+    assert (
+        PipelineConfig(data=DataConfig(catalog_sample_per_experiment=5)).data_fingerprint
+        == PipelineConfig(data=DataConfig(catalog_sample_per_experiment=50)).data_fingerprint
+    )
+
+
+def test_every_sweep_config_shares_the_default_data_configuration() -> None:
+    """A sweep row measured on different data is not an ablation, it is a second study.
+
+    This reads the real files, so adding a config that quietly changes max_seq_length
+    or the experiment list fails here rather than after hours of GPU time.
+    """
+    default = PipelineConfig.from_yaml(Path("configs/default.yaml"))
+    sweep_dir = Path("configs/sweep")
+    configs = sorted(sweep_dir.glob("*.yaml"))
+    assert configs, "the sweep directory is empty"
+    for path in configs:
+        assert PipelineConfig.from_yaml(path).data_fingerprint == default.data_fingerprint, path

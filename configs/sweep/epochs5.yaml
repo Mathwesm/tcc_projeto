@@ -1,0 +1,20 @@
+# Five epochs.
+# If epochs3 helps and epochs5 does not, the gap between them locates the point
+# where a 634-participant subset starts being memorised rather than learned.
+#
+# Only the fields below differ from configs/default.yaml. One variable per run:
+# a table where two things moved at once cannot attribute the difference to either.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+training:
+  num_epochs: 5.0

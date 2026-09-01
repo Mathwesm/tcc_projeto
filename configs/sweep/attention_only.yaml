@@ -1,0 +1,20 @@
+# Adapters on the attention projections only.
+# Fewer adapted modules frees VRAM. If the loss barely moves, that freed
+# memory can buy a longer window instead, which is the real bottleneck.
+#
+# Only the fields below differ from configs/default.yaml. One variable per run:
+# a table where two things moved at once cannot attribute the difference to either.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+model:
+  target_modules: [q_proj, k_proj, v_proj, o_proj]

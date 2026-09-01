@@ -1,0 +1,22 @@
+# LoRA rank 16.
+# Rank 8 mirrors the Centaur paper, but rank 8 on 1.7B is a fraction of the
+# adaptable capacity that rank 8 buys on 70B. Alpha tracks rank at 2x, the usual
+# convention, so the effective scaling stays put and rank is the only variable.
+#
+# Only the fields below differ from configs/default.yaml. One variable per run:
+# a table where two things moved at once cannot attribute the difference to either.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+model:
+  lora_rank: 16
+  lora_alpha: 32

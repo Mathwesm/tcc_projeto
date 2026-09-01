@@ -76,6 +76,8 @@ Toda etapa e um subcomando que le a **mesma** configuracao de
 | `poetry run poe prepare` | Filtra, balanceia, divide e fatia em janelas | `data/processed/dataset/` e `splits.json` |
 | `poetry run poe evaluate` | Mede o NLL sobre as escolhas humanas | `outputs/eval_results.json` |
 | `poetry run poe train` | Fine-tuning QLoRA | `outputs/adapter/` |
+| `poetry run poe sweep` | Treina e avalia toda `configs/sweep/` | `outputs/<run>/` |
+| `poetry run poe report` | Tabela de ablacao e graficos | `outputs/report.txt`, `outputs/figures/` |
 
 As duas ultimas exigem GPU e `unsloth`, que nao sao instalados localmente — rode-as
 no Kaggle, pelo notebook em [`notebooks/kaggle_train.ipynb`](notebooks/kaggle_train.ipynb).
@@ -155,8 +157,13 @@ O pipeline de dados (`eda`, `prepare`) roda no notebook local, em CPU. O treino 
 avaliacao rodam no **Kaggle**: a RTX 3060 Laptop tem 6 GB e o Windows come parte disso,
 e o `unsloth` depende do Triton, cujo suporte a Windows nativo e fragil.
 
-O Kaggle da ~30 horas semanais de P100 de 16 GB, com cota publicada — ao contrario do
-Colab gratuito, que nao informa quanto resta. O notebook pronto esta em
+O Kaggle da ~30 horas semanais de GPU de 16 GB com cota publicada, ao contrario do
+Colab gratuito, que nao informa quanto resta.
+
+**Escolha `GPU T4 x2`, nao a P100.** O unsloth exige CUDA capability 7.0 ou maior: a T4
+e 7.5 e a P100, sendo Pascal, e 6.0. Nao e uma questao de desempenho — abaixo de 7.0 o
+unsloth nao carrega. O notebook restringe a execucao a uma das duas T4, porque o unsloth
+nao lida bem com multiplas GPUs e um modelo de 1.7B em 4-bit sobra numa so. O notebook pronto esta em
 [`notebooks/kaggle_train.ipynb`](notebooks/kaggle_train.ipynb): ele clona este
 repositorio, instala o unsloth, e roda baseline → treino → avaliacao → Minitaur.
 
@@ -165,6 +172,59 @@ repositorio e o `prepare` o le por padrao (`--reuse-splits`). Uma seed sozinha n
 um split: ela fixa uma permutacao da ordem de linhas que a biblioteca produziu naquele
 momento, e essa ordem muda entre versoes. O manifesto e o que permite provar que o
 Kaggle avaliou os mesmos participantes que ficaram de fora aqui.
+
+## O primeiro resultado
+
+Rodada em 2026-09-01 numa T4 do Kaggle, 44 minutos, 1 epoca, 49 passos:
+
+| | NLL | vs. baseline |
+|---|---|---|
+| Qwen3-1.7B sem treino | 0,9240 | — |
+| Qwen3-1.7B + QLoRA rank 8 | **0,6421** | **−30,5%** |
+
+Melhorou nos tres dominios, nao so na media: `peterson2021using` −40,7%,
+`kool2016when` −28,6% e −27,1%, `badham2017deficits` −19,8%. Se o ganho viesse de um
+experimento so, seria o desbalanceamento voltando pela janela.
+
+A avaliacao contou 8.700 tokens contra os 8.704 da preparacao. A diferenca de 4 sao
+janelas que comecam exatamente numa escolha: o primeiro token de cada janela e
+descartado pelo modelo causal, que nao tem contexto anterior para prever a partir dele.
+E o comportamento que `scored_token_count` implementa, e a conta fechar com a explicacao
+e o que confirma que o denominador da metrica esta certo.
+
+## A varredura de ablacao
+
+49 passos e quase nenhum treino, entao `configs/sweep/` contem nove configuracoes que
+variam **uma coisa por vez**: epocas (3, 5), rank do LoRA (16, 32, 64), learning rate
+(1e-4, 2e-4), so as camadas de atencao, e uma combinacao das que funcionarem.
+
+Uma variavel por linha nao e capricho. Numa tabela onde duas coisas mudaram juntas,
+nenhuma diferenca pode ser atribuida a nenhuma das duas.
+
+```bash
+poetry run poe sweep     # roda tudo que ainda nao tem resultado
+poetry run poe report    # tabela e graficos
+```
+
+Cada rodada acontece num processo separado: carregar e descartar modelos quantizados
+repetidamente no mesmo processo fragmenta a VRAM, e numa placa de 16 GB e a quarta
+rodada que morre. Rodadas ja medidas sao puladas, entao uma sessao que cai no meio
+continua de onde parou.
+
+### A protecao do fingerprint
+
+`data_fingerprint` e o hash de tudo que muda o dataset preparado: experimentos, tamanho
+da janela, stride, split, seed e tokenizador. Ele fica gravado no manifesto, e `train` e
+`evaluate` se **recusam a rodar** se o dataset em disco nao corresponder a configuracao.
+
+A falha que isso evita e silenciosa. Aumente `max_seq_length` num arquivo da varredura e
+o dataset em disco continua tokenizado no tamanho antigo: o treino roda, a avaliacao
+roda, e o NLL descreve janelas de um tamanho que a configuracao diz que nao e aquele.
+Nada mais na pilha percebe.
+
+Pelo mesmo motivo, o relatorio so calcula a melhora contra o baseline **da mesma
+configuracao de dados**. Comparar uma rodada de 4096 tokens com um baseline de 2048
+creditaria ao fine-tuning um ganho que veio do contexto extra.
 
 ## Os quatro pontos de comparacao
 
@@ -195,6 +255,7 @@ src/centauro_lite/
 │   ├── chunking.py        # fatiamento em janelas, com snapping de fronteira
 │   ├── masking.py         # localizacao das escolhas humanas <<...>>
 │   ├── metrics.py         # agregacao do NLL, ponderada por token
+│   ├── reporting.py       # tabela de ablacao e comparabilidade entre rodadas
 │   ├── sampling.py        # balanceamento por dominio
 │   └── splits.py          # split por participante e manifesto em disco
 ├── models/
@@ -202,7 +263,10 @@ src/centauro_lite/
 ├── services/
 │   ├── modeling.py        # unsloth: carregar, adaptar, treinar (unica parte que usa GPU)
 │   └── notifier.py        # alerta de falha no Telegram
-notebooks/kaggle_train.ipynb  # o treino, ponta a ponta
+configs/sweep/             # uma configuracao por rodada da ablacao
+notebooks/
+├── kaggle_train.ipynb     # uma rodada, ponta a ponta
+└── kaggle_sweep.ipynb     # a varredura de ablacao
 └── utils/logger.py
 tests/                     # cobre masking, config e catalogo
 data/                      # raw/ interim/ processed/ (fora do git)

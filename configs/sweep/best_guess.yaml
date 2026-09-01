@@ -1,0 +1,25 @@
+# Rank 32, three epochs, doubled learning rate together.
+# The single-variable runs above say what each knob does in isolation; this one
+# checks whether the gains compose or cancel. It is the only multi-variable run
+# on purpose -- more than one would stop being an ablation.
+#
+# Only the fields below differ from configs/default.yaml. One variable per run:
+# a table where two things moved at once cannot attribute the difference to either.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+model:
+  lora_rank: 32
+  lora_alpha: 64
+training:
+  num_epochs: 3.0
+  learning_rate: 1.0e-4
