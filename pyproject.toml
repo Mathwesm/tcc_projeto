@@ -17,7 +17,6 @@ dependencies = [
     "numpy (>=1.26)",
     "typer (>=0.15)",
     "pyyaml (>=6.0)",
-    "types-pyyaml (>=6.0.12.20260815,<7.0.0.0)",
     "matplotlib (>=3.9)",
 ]
 
@@ -40,6 +39,7 @@ poethepoet = "^0.32"
 # Task shortcuts that behave identically on Windows, macOS and Linux. A Makefile
 # would not: Windows has no make. Run them with `poetry run poe <task>`.
 pandas-stubs = "^3.0.5.260730"
+types-pyyaml = "^6.0.12.20260815"
 [tool.poe.tasks]
 fmt = "ruff format ."
 lint = "ruff check --fix ."

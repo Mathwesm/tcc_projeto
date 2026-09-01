@@ -3494,7 +3494,7 @@ version = "6.0.12.20260815"
 description = "Typing stubs for PyYAML"
 optional = false
 python-versions = ">=3.10"
-groups = ["main"]
+groups = ["dev"]
 files = [
     {file = "types_pyyaml-6.0.12.20260815-py3-none-any.whl", hash = "sha256:6f332212b7e191f3afd5016a713c510b6340593b7ebec573c7d5d20aa5386d3b"},
     {file = "types_pyyaml-6.0.12.20260815.tar.gz", hash = "sha256:28764110c9cf35846e733da32d8d734df7473c5dde9ef67c3b7332ec0e819858"},
@@ -3938,4 +3938,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "701908fa13654b461b24aebc2a9db53d634b0c35ec3ba3de67c5fbc228bea502"
+content-hash = "ed4d914b9f11638c7be706caeddb8b9e0c5b6ef0d9254f3021c29d5526833dec"
