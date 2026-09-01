@@ -1,0 +1,252 @@
+# Centauro-Lite
+
+Fine-tuning QLoRA de modelos pequenos sobre o **Psych-101** para prever comportamento
+humano em tarefas psicologicas, como alternativa ao **Centaur** (Binz et al., 2025,
+*Nature*) — que usa Llama 3.1 70B e cinco dias de A100 80GB. Aqui: Qwen3-1.7B em 4-bit
+num notebook com RTX 3060 de 6GB.
+
+A pergunta do trabalho nao e "conseguimos bater 0,44". E **quanto do desempenho do
+Centaur sobrevive quando o modelo encolhe 40x e o hardware 100x** — e o valor da
+resposta depende inteiramente de a comparacao ser honesta.
+
+Documento de referencia completo: [`docs/project_brief.md`](docs/project_brief.md).
+
+## Stack
+
+Python 3.12 · Poetry · loguru · pydantic · typer · datasets · transformers · Ruff · mypy · pytest
+
+## Pre-requisitos
+
+So a instalacao do Poetry difere entre sistemas. Do `poetry install` em diante os
+comandos sao identicos nos tres.
+
+<details>
+<summary><b>Windows</b></summary>
+
+```powershell
+python -m pip install --user pipx
+python -m pipx ensurepath
+pipx install poetry
+```
+
+Abra um terminal novo depois do `ensurepath`. Defina `PYTHONUTF8=1` no ambiente: o
+padrao do Windows e `cp1252` e corrompe as transcricoes do Psych-101.
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+```bash
+brew install pipx
+pipx ensurepath
+pipx install poetry
+```
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
+
+```bash
+sudo apt install pipx        # ou: python3 -m pip install --user pipx
+pipx ensurepath
+pipx install poetry
+```
+</details>
+
+## Setup
+
+```bash
+git clone https://github.com/Mathwesm/tcc_projeto.git
+cd tcc_projeto
+poetry install
+poetry run pre-commit install
+cp .env.example .env   # no Windows: copy .env.example .env
+```
+
+O `.env` so e necessario para o alerta de falha no Telegram; o pipeline roda sem ele.
+
+## Como rodar
+
+Toda etapa e um subcomando que le a **mesma** configuracao de
+[`configs/default.yaml`](configs/default.yaml):
+
+| Comando | O que faz | Saida |
+|---|---|---|
+| `poetry run poe eda` | Cataloga os experimentos do Psych-101 | `data/interim/experiment_catalog.csv` |
+| `poetry run poe prepare` | Filtra, balanceia, divide e fatia em janelas | `data/processed/dataset/` e `splits.json` |
+| `poetry run poe evaluate` | Mede o NLL sobre as escolhas humanas | `outputs/eval_results.json` |
+| `poetry run poe train` | Fine-tuning QLoRA | `outputs/adapter/` |
+
+As duas ultimas exigem GPU e `unsloth`, que nao sao instalados localmente — rode-as
+no Kaggle, pelo notebook em [`notebooks/kaggle_train.ipynb`](notebooks/kaggle_train.ipynb).
+
+Para rodar uma variacao sem tocar no default:
+
+```bash
+poetry run python -m centauro_lite eda --config configs/rank32.yaml
+```
+
+Atalhos de desenvolvimento: `poe gate` (portao completo), `poe test`, `poe lint`.
+
+## Por que uma CLI e nao scripts numerados
+
+A primeira versao do projeto era `01_explore_data.py` … `04_evaluate.py`, e cada um
+carregava sua propria copia de `max_seq_length`. Quando essas copias divergem, nada
+falha: o dataset e tokenizado num comprimento, o modelo treina em outro, e o NLL sai
+errado sem uma linha de erro na tela.
+
+`configs/default.yaml` e a unica fonte, e chave desconhecida no YAML e **rejeitada** —
+um `max_seq_lenght` com typo para a execucao em vez de usar o default em silencio.
+
+## O que a EDA ja mostrou
+
+Rodada em 2026-09-01 com `max_seq_length = 2048`:
+
+- **Os totais batem exatamente com os numeros publicados**: 60.092 participantes e
+  10.681.650 escolhas. Isso valida a deteccao dos marcadores `<<...>>` contra a fonte —
+  se o regex estivesse errado, a contagem nao fecharia.
+- A coluna `experiment` tem **76 valores distintos**, nao os "160 experimentos" do
+  paper. Como participantes e escolhas fecham, nao ha dado faltando: o paper conta
+  experimentos por um criterio mais fino do que um arquivo por linha. Vale registrar a
+  diferenca na metodologia em vez de repetir "160" sem checar.
+- **Apenas 2 dos 76 experimentos cabem inteiros em 2048 tokens.** Os outros 74 precisam
+  ser fatiados.
+
+A coluna decisiva do catalogo e **`fits_in_window_pct`**: a fracao de participantes cuja
+transcricao inteira cabe numa janela. Cada linha do Psych-101 e a sessao completa de um
+participante — media de ~4,2 mil tokens e maximo de 57 mil, contra os 32.768 de contexto
+que o Centaur usa. Truncar em 2048 nao perde "um pedaco do fim": perde tudo menos os
+**primeiros trials**, justamente a fase em que a pessoa ainda nao aprendeu a tarefa e o
+comportamento e menos previsivel. O NLL sobe por vies de amostragem e deixa de
+significar qualquer coisa.
+
+Por isso as transcricoes sao **fatiadas em janelas**, nao truncadas — e `windows_mean`
+diz em quantas.
+
+## O que o `prepare` produziu
+
+Rodada em 2026-09-01 com `max_choices_per_domain = 30000`:
+
+| Dominio | Experimento | Escolhas apos balanceamento |
+|---|---|---|
+| `risky_choice` | `peterson2021using` | 30.055 |
+| `categorization` | `badham2017deficits` | 29.776 |
+| `reinforcement_learning` | `kool2016when` (exp1+exp2) | 30.091 |
+
+Antes do balanceamento a proporcao era de 37 para 1 a favor do `peterson2021using`, o
+que faria o treino ser ~92% um experimento so — e a tese de especializacao
+multi-dominio ficaria sem sentido.
+
+Resultado: 572 participantes de treino (1.546 janelas) e 62 de validacao (169 janelas).
+
+**A verificacao que importa**: 89.922 escolhas selecionadas contra 89.922 tokens
+pontuados, diferenca **zero**. Nenhuma escolha foi perdida no fatiamento nem contada
+duas vezes. Nenhum participante aparece dos dois lados do split, e os quatro arquivos
+de experimento estao representados na validacao.
+
+A ordem das operacoes e o ponto todo: **filtrar → balancear → dividir por participante
+→ so entao fatiar em janelas**. Fatiar antes de dividir colocaria pedacos da mesma
+sessao nos dois lados do split, e a validacao passaria a medir memorizacao em vez de
+generalizacao.
+
+## Onde o treino roda
+
+O pipeline de dados (`eda`, `prepare`) roda no notebook local, em CPU. O treino e a
+avaliacao rodam no **Kaggle**: a RTX 3060 Laptop tem 6 GB e o Windows come parte disso,
+e o `unsloth` depende do Triton, cujo suporte a Windows nativo e fragil.
+
+O Kaggle da ~30 horas semanais de P100 de 16 GB, com cota publicada — ao contrario do
+Colab gratuito, que nao informa quanto resta. O notebook pronto esta em
+[`notebooks/kaggle_train.ipynb`](notebooks/kaggle_train.ipynb): ele clona este
+repositorio, instala o unsloth, e roda baseline → treino → avaliacao → Minitaur.
+
+**O split nao e re-sorteado la.** `data/processed/splits.json` e versionado no
+repositorio e o `prepare` o le por padrao (`--reuse-splits`). Uma seed sozinha nao fixa
+um split: ela fixa uma permutacao da ordem de linhas que a biblioteca produziu naquele
+momento, e essa ordem muda entre versoes. O manifesto e o que permite provar que o
+Kaggle avaliou os mesmos participantes que ficaram de fora aqui.
+
+## Os quatro pontos de comparacao
+
+O 0,44 do Centaur foi medido nos 160 experimentos completos, com outro tokenizador.
+Comparar um NLL medido em tres experimentos com aquele numero e comparar denominadores
+diferentes. Por isso a comparacao central e outra:
+
+| Ponto | Como obter | Papel |
+|---|---|---|
+| Qwen3-1.7B cru | `evaluate` sem adapter | piso — de onde partimos |
+| Qwen3-1.7B + QLoRA | `evaluate --adapter ...` | o resultado do trabalho |
+| **Minitaur-8B** | `evaluate --model marcelbinz/Llama-3.1-Minitaur-8B` | **teto e comparacao justa** |
+| Centaur 70B = 0,44 | valor fixo do paper | baliza, comparacao declaradamente indireta |
+
+O Minitaur e a versao 8B do Centaur publicada pelos proprios autores, com a mesma
+receita. Rodado pelo mesmo codigo, no mesmo split e com a mesma metrica, ele transforma
+"chegamos perto de um numero de outro setup" em uma comparacao controlada.
+
+## Estrutura
+
+```
+configs/default.yaml       # fonte unica de configuracao
+src/centauro_lite/
+├── cli.py                 # uma etapa do pipeline por subcomando
+├── config.py              # settings de ambiente (.env), validadas no boot
+├── core/
+│   ├── catalog.py         # EDA: inventario dos experimentos
+│   ├── chunking.py        # fatiamento em janelas, com snapping de fronteira
+│   ├── masking.py         # localizacao das escolhas humanas <<...>>
+│   ├── metrics.py         # agregacao do NLL, ponderada por token
+│   ├── sampling.py        # balanceamento por dominio
+│   └── splits.py          # split por participante e manifesto em disco
+├── models/
+│   └── pipeline_config.py # schema da configuracao do pipeline
+├── services/
+│   ├── modeling.py        # unsloth: carregar, adaptar, treinar (unica parte que usa GPU)
+│   └── notifier.py        # alerta de falha no Telegram
+notebooks/kaggle_train.ipynb  # o treino, ponta a ponta
+└── utils/logger.py
+tests/                     # cobre masking, config e catalogo
+data/                      # raw/ interim/ processed/ (fora do git)
+```
+
+## Testes
+
+```bash
+poetry run pytest
+```
+
+**Cobre**: exclusao dos delimitadores `<<`/`>>` da perda, tokens que cruzam a fronteira
+de uma escolha, transcricoes malformadas e multi-linha, rejeicao de chave desconhecida
+e de stride maior que a janela na configuracao, a aritmetica de janelas do catalogo, a
+preservacao de toda escolha no fatiamento (e de nenhuma duas vezes, mesmo com
+sobreposicao), o balanceamento entre dominios e entre experimentos do mesmo dominio, e
+a ausencia de vazamento de participante entre treino e validacao, e a agregacao do
+NLL (ponderacao por token, exclusao da posicao 0 apos o shift causal, e recusa em
+reportar 0,0 quando nada foi pontuado).
+
+**Nao cobre**: `services/modeling.py` e o laco de GPU do `evaluate`. Sao encanamento
+para o unsloth, sem logica propria, e nao ha GPU no ambiente onde a suite roda. A
+aritmetica que eles alimentam esta testada em `core/metrics.py` — foi justamente para
+isso que ela vive separada do codigo de GPU.
+
+**Nao foi executado ainda**: nenhuma rodada de treino aconteceu. O codigo de `train` e
+`evaluate` foi escrito contra a documentacao do unsloth e nao contra uma GPU real, entao
+espere ajustes na primeira execucao.
+
+## Portao de qualidade
+
+Roda sozinho no pre-commit e no CI. Manualmente, um comando so:
+
+```bash
+poetry run poe gate
+```
+
+Executa `ruff format` → `ruff check` → `mypy src/` → `pytest`, na mesma ordem do CI.
+O linter e quem impoe as regras do projeto: `T20` proibe `print()`, `DTZ` proibe
+`datetime` ingenuo, `PTH` proibe `os.path`, `S` pega segredo hardcoded.
+
+## Referencias
+
+- [Binz et al. (2025), *A foundation model to predict and capture human cognition*, Nature](https://www.nature.com/articles/s41586-025-09215-4)
+- [Dataset Psych-101](https://huggingface.co/datasets/marcelbinz/Psych-101)
+- [Llama-3.1-Minitaur-8B](https://huggingface.co/marcelbinz/Llama-3.1-Minitaur-8B) — versao 8B do Centaur, ponto de comparacao central deste trabalho
+- [Repositorio do Centaur 70B](https://github.com/marcelbinz/Llama-3.1-Centaur-70B)
