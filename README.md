@@ -210,6 +210,23 @@ poetry run poe sweep     # roda tudo que ainda nao tem resultado
 poetry run poe report    # tabela e graficos
 ```
 
+As configuracoes ficam em dois grupos porque uma sessao em lote do Kaggle morre em 12
+horas e a varredura inteira passa disso — uma execucao cortada no teto perde o que nao
+terminou:
+
+| grupo | rodadas | estimativa |
+|---|---|---|
+| `configs/sweep/group_a` | `epochs3`, `rank32`, `lr1e4`, `attention_only`, `best_guess` | ~6h |
+| `configs/sweep/group_b` | `epochs5`, `rank16`, `rank64`, `lr2e4` | ~6h |
+
+```bash
+poetry run python -m centauro_lite sweep --configs configs/sweep/group_a
+```
+
+No Kaggle, use **Save Version -> Save & Run All (Commit)**, nunca Run All: a sessao
+interativa e derrubada apos 1 hora sem interacao, enquanto a execucao em lote roda no
+servidor sem depender do navegador.
+
 Cada rodada acontece num processo separado: carregar e descartar modelos quantizados
 repetidamente no mesmo processo fragmenta a VRAM, e numa placa de 16 GB e a quarta
 rodada que morre. Rodadas ja medidas sao puladas, entao uma sessao que cai no meio

@@ -161,8 +161,9 @@ def test_every_sweep_config_shares_the_default_data_configuration() -> None:
     """
     default = PipelineConfig.from_yaml(Path("configs/default.yaml"))
     sweep_dir = Path("configs/sweep")
-    configs = sorted(sweep_dir.glob("*.yaml"))
+    configs = sorted(sweep_dir.rglob("*.yaml"))
     assert configs, "the sweep directory is empty"
+    assert len(configs) >= 2, "grouping the sweep must not hide configs from this check"
     for path in configs:
         assert PipelineConfig.from_yaml(path).data_fingerprint == default.data_fingerprint, path
 

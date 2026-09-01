@@ -683,7 +683,11 @@ def sweep(
         base_config: Configuration used for the shared baseline measurement.
         force: Re-run configurations that already have a result.
     """
-    configs = sorted(config_dir.glob("*.yaml"))
+    # Recursive so `--configs configs/sweep` runs everything while
+    # `--configs configs/sweep/group_a` runs one group. The groups exist because a
+    # Kaggle batch session is capped at 12 hours and the full sweep is longer than
+    # that; a run killed at the cap loses whatever it had not finished.
+    configs = sorted(config_dir.rglob("*.yaml"))
     if not configs:
         typer.echo(f"No configurations found in {config_dir}")
         raise typer.Exit(code=1)
