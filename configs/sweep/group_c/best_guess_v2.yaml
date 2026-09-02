@@ -1,0 +1,31 @@
+# The combination the first sweep could not make.
+#
+# best_guess used rank 32, 3 epochs and lr 1e-4, and won at 0.5388 -- but it was
+# assembled before the single-variable runs had reported. Those runs then showed that
+# 5 epochs beats 3 (0.5517 vs 0.5679) and 2e-4 beats 1e-4 (0.5836 vs 0.6000). This is
+# the same idea rebuilt from what the table actually says.
+#
+# Rank goes to 64 even though the ladder is nearly flat there (8->16 bought 0.034,
+# 16->32 bought 0.018, 32->64 bought 0.007): the remaining gain is small but free, and
+# a saturated axis is worth pinning at its ceiling while the other two are still moving.
+#
+# Only the fields below differ from configs/default.yaml. The data configuration is
+# identical to every other run, so this row is comparable with the rest of the table.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+model:
+  lora_rank: 64
+  lora_alpha: 128
+training:
+  num_epochs: 5.0
+  learning_rate: 2.0e-4

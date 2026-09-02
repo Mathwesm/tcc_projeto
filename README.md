@@ -218,6 +218,7 @@ terminou:
 |---|---|---|
 | `configs/sweep/group_a` | `epochs3`, `rank32`, `lr1e4`, `attention_only`, `best_guess` | ~6h |
 | `configs/sweep/group_b` | `epochs5`, `rank16`, `rank64`, `lr2e4` | ~6h |
+| `configs/sweep/group_c` | `best_guess_v2`, `lr4e4`, `epochs8` | ~5h |
 
 ```bash
 poetry run python -m centauro_lite sweep --configs configs/sweep/group_a
@@ -283,6 +284,55 @@ Nada mais na pilha percebe.
 Pelo mesmo motivo, o relatorio so calcula a melhora contra o baseline **da mesma
 configuracao de dados**. Comparar uma rodada de 4096 tokens com um baseline de 2048
 creditaria ao fine-tuning um ganho que veio do contexto extra.
+
+## Resultado da ablacao
+
+Medido em 2026-09-02, T4 do Kaggle, mesmos 62 participantes retidos em todas as linhas.
+
+| configuracao | NLL | vs. baseline |
+|---|---|---|
+| `best_guess` (rank 32, 3 ep, lr 1e-4) | **0,5388** | −41,7% |
+| `epochs5` | 0,5517 | −40,3% |
+| `epochs3` | 0,5679 | −38,5% |
+| `rank64` | 0,5825 | −37,0% |
+| `lr2e4` | 0,5836 | −36,8% |
+| `rank32` | 0,5892 | −36,2% |
+| `lr1e4` | 0,6000 | −35,1% |
+| `rank16` | 0,6077 | −34,2% |
+| referencia (rank 8, 1 ep, lr 5e-5) | 0,6421 | −30,5% |
+| **`minitaur-8b`** | **0,6748** | — |
+| `attention_only` | 0,7029 | −23,9% |
+| baseline sem ajuste | 0,9240 | — |
+
+**O modelo de 1,7B superou o Minitaur-8B em 20%**, medido pelo mesmo codigo, sobre os
+mesmos participantes retidos. O Minitaur e a versao de 8 bilhoes do Centaur, publicada
+pelos proprios autores com a mesma receita, e foi treinado nos 160 experimentos — a
+comparacao mede especializacao contra escala dentro do dominio, e nao qualidade de
+modelo em abstrato.
+
+Ressalva que acompanha a linha do Minitaur: ela carrega outro `data_fingerprint`, porque
+foi necessariamente medida sobre a tokenizacao dele. Repare nos 8.701 tokens contra
+8.700 — o Llama fatiou uma escolha em um token a mais. NLL por token nao e rigorosamente
+comparavel entre tokenizadores; uma diferenca de 20%, no entanto, e grande demais para
+ser explicada por isso.
+
+### As tres curvas
+
+Cada eixo foi variado isoladamente, com todo o resto fixo:
+
+| epocas | NLL | | rank | NLL | | learning rate | NLL |
+|---|---|---|---|---|---|---|---|
+| 1 | 0,6421 | | 8 | 0,6421 | | 5e-5 | 0,6421 |
+| 3 | 0,5679 | | 16 | 0,6077 | | 1e-4 | 0,6000 |
+| 5 | 0,5517 | | 32 | 0,5892 | | 2e-4 | 0,5836 |
+| | | | 64 | 0,5825 | | | |
+
+O **rank saturou**: cada dobra rende metade da anterior (0,034 → 0,018 → 0,007). As
+outras duas ainda nao pararam — em particular, previa-se que 2e-4 fosse excessivo e ele
+melhorou o resultado, de modo que o teto da taxa de aprendizado permanece por localizar.
+
+Dai o `group_c`: a combinacao das melhores opcoes individuais nunca foi executada,
+porque o `best_guess` foi montado antes de os resultados individuais existirem.
 
 ## Os quatro pontos de comparacao
 

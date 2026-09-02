@@ -1,0 +1,25 @@
+# Where does the learning rate finally break?
+#
+# The rate was predicted to overshoot at 2e-4 and did not -- it improved on 1e-4. Every
+# rate tried so far has been better than the one below it, which means the table shows
+# a ceiling that has not been found rather than a rate that has been chosen.
+#
+# A bad result here is the useful one: it closes the curve and demonstrates the search
+# went past the optimum instead of stopping at the largest value that happened to work.
+#
+# Only the fields below differ from configs/default.yaml. The data configuration is
+# identical to every other run, so this row is comparable with the rest of the table.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+training:
+  learning_rate: 4.0e-4

@@ -1,0 +1,23 @@
+# Do the epochs saturate the way the rank did?
+#
+# 1 -> 3 bought 0.074, 3 -> 5 bought 0.016. If 5 -> 8 buys almost nothing, the axis is
+# closed and the remaining headroom is in the training data, not in the optimisation.
+# With 572 participants, this is also where overfitting becomes the likelier outcome --
+# which is why the validation loss per epoch matters more here than the final number.
+#
+# Only the fields below differ from configs/default.yaml. The data configuration is
+# identical to every other run, so this row is comparable with the rest of the table.
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  max_choices_per_domain: 30000
+
+training:
+  num_epochs: 8.0
