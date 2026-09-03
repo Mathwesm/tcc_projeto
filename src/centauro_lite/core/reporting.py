@@ -30,6 +30,9 @@ class ReportRow(BaseModel):
     nll: float
     n_scored_tokens: int
     fingerprint: str | None = None
+    """Evaluation fingerprint: what the row was measured *on*. Rows sharing it are
+    comparable even when they trained on different amounts of data."""
+
     per_experiment: dict[str, float] = {}
     improvement_pct: float | None = None
     """Reduction in NLL against the baseline of the same data configuration. ``None``
@@ -58,7 +61,10 @@ def load_rows(results: Mapping[str, Any]) -> list[ReportRow]:
             label=label,
             nll=float(entry["nll"]),
             n_scored_tokens=int(entry["n_scored_tokens"]),
-            fingerprint=entry.get("data_fingerprint"),
+            # Prefer the evaluation fingerprint: comparability is decided by what a
+            # row was measured on, not by how its training data was tokenized. Older
+            # results carry only the data fingerprint, and for those the two coincide.
+            fingerprint=entry.get("eval_fingerprint") or entry.get("data_fingerprint"),
             per_experiment={k: float(v) for k, v in entry.get("per_experiment", {}).items()},
         )
         for label, entry in results.items()

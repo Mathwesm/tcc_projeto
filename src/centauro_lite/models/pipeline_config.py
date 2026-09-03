@@ -97,6 +97,14 @@ class DataConfig(BaseModel):
     val_fraction: float = Field(default=0.10, gt=0.0, lt=1.0)
     seed: int = 3407
 
+    validation_from: str | None = None
+    """Split fingerprint whose validation participants this run reuses.
+
+    Growing the training set normally moves the held-out participants too, and a result
+    measured on different people cannot be compared with one measured on the originals.
+    Pinning the validation set is what makes "more data helped" a statement about the
+    data rather than about which participants happened to be held out."""
+
     max_choices_per_domain: int | None = Field(default=None, ge=1)
     """Choice budget per cognitive domain. Without a cap the raw sizes decide the mix:
     ``peterson2021using`` alone carries 1,097,375 choices against 29,776 in
@@ -179,6 +187,30 @@ class TrainingConfig(BaseModel):
     num_epochs: float = Field(default=1.0, gt=0.0)
     per_device_batch_size: int = Field(default=1, ge=1)
     grad_accumulation_steps: int = Field(default=32, ge=1)
+
+    select_best_epoch: bool = False
+    """Keep the epoch with the lowest validation loss instead of the last one.
+
+    Off by default so the ablation stays reproducible: every row of that table reports
+    its final epoch, and several of them were past their validation minimum, which makes
+    the table a conservative floor rather than an optimistic ceiling. Turning this on
+    changes what a run means, so it is a declared choice and never a silent default."""
+
+    early_stopping_patience: int | None = Field(default=None, ge=1)
+    """Stop after this many epochs without improvement. Requires
+    ``select_best_epoch``, since stopping early is only safe when the best checkpoint
+    is the one kept."""
+
+    @model_validator(mode="after")
+    def _check_early_stopping(self) -> Self:
+        if self.early_stopping_patience is not None and not self.select_best_epoch:
+            msg = (
+                "early_stopping_patience requires select_best_epoch: stopping early "
+                "while keeping the last epoch discards the very checkpoint that "
+                "triggered the stop"
+            )
+            raise ValueError(msg)
+        return self
 
     @property
     def effective_batch_size(self) -> int:
@@ -281,6 +313,29 @@ class PipelineConfig(BaseModel):
             "max_choices_per_domain": self.data.max_choices_per_domain,
         }
         return _short_hash(payload)
+
+    @property
+    def eval_fingerprint(self) -> str:
+        """Short hash of everything that decides what the metric is measured on.
+
+        Returns:
+            Twelve hex characters identifying this evaluation setting.
+
+        Note:
+            Two runs are comparable when they score the same held-out participants with
+            the same tokenizer and window size -- regardless of how much data either one
+            trained on. That is precisely what this hashes, and it is why a run with a
+            larger training set can still sit in the same table as the ablation, so long
+            as it inherits the validation set through ``validation_from``.
+        """
+        return _short_hash(
+            {
+                "validation_source": self.data.validation_from or self.split_fingerprint,
+                "max_seq_length": self.data.max_seq_length,
+                "window_stride": self.data.window_stride,
+                "tokenizer": self.model.tokenizer_source,
+            }
+        )
 
     @property
     def data_fingerprint(self) -> str:

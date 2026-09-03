@@ -220,6 +220,9 @@ terminou:
 | `configs/sweep/group_b` | `epochs5`, `rank16`, `rank64`, `lr2e4` | ~6h |
 | `configs/sweep/group_c` | `best_guess_v2`, `lr4e4`, `epochs8` | ~5h |
 
+A ablacao esta encerrada. O passo seguinte e `configs/final.yaml` — ver
+"O limite nao e o modelo, e o dado" abaixo.
+
 ```bash
 poetry run python -m centauro_lite sweep --configs configs/sweep/group_a
 ```
@@ -269,6 +272,59 @@ nenhum poderia ser atribuido ao modelo.
 Ressalva que fica na discussao do TCC: mesmo feito assim, NLL por token nunca e
 perfeitamente comparavel entre tokenizadores, porque cada um corta o texto em pedacos
 diferentes. Dar a cada modelo o seu vocabulario e o piso, nao a solucao.
+
+### O limite nao e o modelo, e o dado
+
+A ablacao fechou os tres eixos: cada incremento rende metade do anterior, e qualquer
+extensao adicional renderia menos de 0,005.
+
+Em seguida veio o resultado mais util dela. Combinar o melhor de cada eixo — posto 64,
+5 epocas, lr 2e-4 — deu **0,5829**, *pior* que o posto 32, 3 epocas, lr 1e-4 a **0,5388**.
+Os fatores nao sao aditivos: existe um otimo interior, e levar os tres eixos ao maximo
+individual passa dele.
+
+As curvas de validacao dizem por que:
+
+| epoca | agressiva (posto 64, lr 2e-4) | comportada (posto 8, lr 5e-5) |
+|---|---|---|
+| 1 | 0,6125 | 0,7467 |
+| 3 | **0,5781** | 0,6091 |
+| 5 | 0,6430 | 0,5896 |
+| 7 | — | **0,5853** |
+| 8 | — | 0,5872 |
+
+A agressiva atinge o minimo na epoca 3 e esta 11% pior na 5. A comportada so vira na 7,
+e por 0,3%. Mais capacidade e passos maiores nao melhoram o modelo — aceleram o
+sobreajuste sobre 572 participantes.
+
+Duas consequencias, ambas implementadas:
+
+**A tabela de ablacao e conservadora.** Todas as linhas reportam a epoca final, e varias
+ja haviam passado do seu minimo. `select_best_epoch` existe para corrigir isso, mas fica
+**desligado por padrao**: liga-lo mudaria o significado das linhas ja publicadas.
+
+**A rodada final aumenta o dado, nao o modelo.** `configs/final.yaml` mantem os
+hiperparametros vencedores e eleva o orcamento de 30 mil para 300 mil escolhas por
+dominio.
+
+### Por que a rodada final continua comparavel
+
+Um orcamento maior seleciona mais participantes, e 10% de um conjunto diferente seria
+retido — o resultado seria medido em outras pessoas, incomparavel com a tabela enquanto
+parece diretamente comparavel.
+
+`validation_from` fixa os **mesmos 62 participantes retidos**; so o treino cresce. Isso
+introduz o terceiro fingerprint:
+
+| fingerprint | identifica | default | final |
+|---|---|---|---|
+| `split` | quais participantes sao usados | `2379f5392193` | outro |
+| `data` | como o texto virou tokens | `8c70b49e3cf5` | `4feec15d15ec` |
+| **`eval`** | **sobre o que a metrica e medida** | `13a603625780` | `13a603625780` |
+
+O relatorio compara por **`eval`**: duas linhas sao comparaveis quando pontuam os mesmos
+participantes retidos, com o mesmo tokenizador e a mesma janela — independentemente de
+quanto dado cada uma viu no treino.
 
 ### A protecao do fingerprint
 

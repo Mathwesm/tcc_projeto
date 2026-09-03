@@ -232,3 +232,77 @@ def test_the_minitaur_config_shares_the_split_and_not_the_tokenization() -> None
     minitaur = PipelineConfig.from_yaml(Path("configs/minitaur.yaml"))
     assert minitaur.split_fingerprint == default.split_fingerprint
     assert minitaur.data_fingerprint != default.data_fingerprint
+
+
+def test_pinned_validation_keeps_runs_comparable() -> None:
+    """Growing the training set must not change what the metric is measured on.
+
+    Without the pin, a larger budget selects more participants, 10% of a different pool
+    is held out, and the result is measured on strangers -- incomparable with the
+    ablation table while looking directly comparable to it.
+    """
+    small = PipelineConfig(data=DataConfig(max_choices_per_domain=30_000))
+    large = PipelineConfig(
+        data=DataConfig(max_choices_per_domain=300_000, validation_from=small.split_fingerprint)
+    )
+    assert large.eval_fingerprint == small.eval_fingerprint
+    assert large.data_fingerprint != small.data_fingerprint
+
+
+def test_more_data_alone_breaks_comparability() -> None:
+    """The counterpart: without the pin, the two runs are not comparable."""
+    small = PipelineConfig(data=DataConfig(max_choices_per_domain=30_000))
+    large = PipelineConfig(data=DataConfig(max_choices_per_domain=300_000))
+    assert large.eval_fingerprint != small.eval_fingerprint
+
+
+def test_evaluation_fingerprint_tracks_the_tokenizer_and_window() -> None:
+    """The pin alone is not enough to make two runs comparable.
+
+    The same people, tokenized differently or seen through a different window, are a
+    different measurement.
+    """
+    from centauro_lite.models.pipeline_config import ModelConfig
+
+    base = PipelineConfig()
+    assert (
+        PipelineConfig(data=DataConfig(max_seq_length=4096)).eval_fingerprint
+        != base.eval_fingerprint
+    )
+    assert (
+        PipelineConfig(
+            model=ModelConfig(base_model="marcelbinz/Llama-3.1-Minitaur-8B")
+        ).eval_fingerprint
+        != base.eval_fingerprint
+    )
+
+
+def test_early_stopping_requires_keeping_the_best_epoch() -> None:
+    """Stopping early while saving the last epoch is the worst of both behaviours.
+
+    It discards the very checkpoint that triggered the stop, and does so silently.
+    """
+    with pytest.raises(ValidationError, match="select_best_epoch"):
+        TrainingConfig(early_stopping_patience=2)
+
+
+def test_the_ablation_keeps_its_final_epoch_by_default() -> None:
+    """The published table reports final epochs across every row.
+
+    Several of those rows were past their validation minimum, which makes the table a
+    conservative floor. Flipping this default would silently change what the numbers
+    mean and break comparability with what has already been reported.
+    """
+    assert PipelineConfig().training.select_best_epoch is False
+    for path in sorted(Path("configs/sweep").rglob("*.yaml")):
+        assert PipelineConfig.from_yaml(path).training.select_best_epoch is False, path
+
+
+def test_the_final_config_is_comparable_with_the_ablation() -> None:
+    """The real files: same measurement, ten times the training data."""
+    default = PipelineConfig.from_yaml(Path("configs/default.yaml"))
+    final = PipelineConfig.from_yaml(Path("configs/final.yaml"))
+    assert final.eval_fingerprint == default.eval_fingerprint
+    assert final.data_fingerprint != default.data_fingerprint
+    assert final.data.max_choices_per_domain == 10 * (default.data.max_choices_per_domain or 0)
+    assert final.training.select_best_epoch is True

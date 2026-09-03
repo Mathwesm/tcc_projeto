@@ -32,6 +32,7 @@ from centauro_lite.core.metrics import (
 from centauro_lite.core.reporting import format_table, load_rows, rank, with_improvements
 from centauro_lite.core.sampling import ParticipantRef, balance_domains, choices_per_domain
 from centauro_lite.core.splits import (
+    SplitAssignment,
     leaked_participants,
     load_manifest,
     manifest,
@@ -86,13 +87,6 @@ AdapterOption = Annotated[
 LabelOption = Annotated[
     str | None,
     typer.Option("--label", "-l", help="Name for this result in the report."),
-]
-
-ModelOption = Annotated[
-    str | None,
-    typer.Option(
-        "--model", "-m", help="Evaluate another model, e.g. marcelbinz/Llama-3.1-Minitaur-8B."
-    ),
 ]
 
 
@@ -248,37 +242,14 @@ def prepare(
     ]
     logger.info("Matched {} participants across the target experiments", len(refs))
 
-    manifest_path = config.paths.manifest_path(config.split_fingerprint)
-    if reuse_splits and manifest_path.is_file():
-        assignment = load_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
-        selected = [ref for ref in refs if (ref.experiment, ref.participant) in assignment.keys]
-        logger.info(
-            "Reusing the committed split manifest: {} participants",
-            len(assignment.keys),
-        )
-        if len(selected) != len(assignment.keys):
-            msg = (
-                f"The manifest names {len(assignment.keys)} participants but only "
-                f"{len(selected)} were found in the dataset. The manifest and the "
-                f"configured experiments disagree; rerun with --resample or fix the config."
-            )
-            raise RuntimeError(msg)
-    else:
-        selected = balance_domains(
-            refs,
-            max_choices_per_domain=config.data.max_choices_per_domain,
-            seed=config.data.seed,
-        )
-        assignment = split_participants(
-            [(ref.experiment, ref.participant) for ref in selected],
-            val_fraction=config.data.val_fraction,
-            seed=config.data.seed,
-        )
+    selected, assignment = _resolve_split(config, refs, reuse_splits)
+
     logger.info(
         "{} participants selected, choices per domain: {}",
         len(selected),
         choices_per_domain(selected),
     )
+    manifest_path = config.paths.manifest_path(config.split_fingerprint)
     leaked = leaked_participants(assignment)
     if leaked:  # pragma: no cover - structurally impossible, kept as a tripwire
         msg = f"{len(leaked)} participants appear in both splits: {sorted(leaked)[:5]}"
@@ -595,8 +566,17 @@ def _write_results(config: PipelineConfig, result: NllResult) -> None:
     path = config.paths.outputs / "eval_results.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     results = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    results[result.label] = result.model_dump() | {"data_fingerprint": config.data_fingerprint}
-    results["_references"] = result.comparison()
+    results[result.label] = result.model_dump() | {
+        "data_fingerprint": config.data_fingerprint,
+        "split_fingerprint": config.split_fingerprint,
+        "eval_fingerprint": config.eval_fingerprint,
+        "tokenizer": config.model.tokenizer_source,
+    }
+    # Only the published constants belong under the metadata key. Writing the whole
+    # comparison there let the last-evaluated model leak in as a "reference".
+    references = result.comparison()
+    references.pop(result.label, None)
+    results["_references"] = references
     path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Results written to {}", path)
 
@@ -724,6 +704,123 @@ def sweep(
     if failures:
         typer.echo(f"\nFailed: {', '.join(failures)}")
     report(base_config)
+
+
+def _resolve_split(
+    config: PipelineConfig, refs: list[ParticipantRef], reuse_splits: bool
+) -> tuple[list[ParticipantRef], SplitAssignment]:
+    """Decide which participants are used and how they are divided.
+
+    Three routes, in order of precedence: a pinned validation set inherited from an
+    earlier split, the committed manifest, or a fresh sample.
+
+    Args:
+        config: The pipeline configuration.
+        refs: Every participant matching the configured experiments.
+        reuse_splits: Whether to prefer the committed manifest over resampling.
+
+    Returns:
+        The selected participants and their assignment.
+
+    Raises:
+        RuntimeError: When the manifest names participants absent from the dataset,
+            which means the manifest and the configured experiments disagree.
+    """
+    manifest_path = config.paths.manifest_path(config.split_fingerprint)
+    inherited = _inherited_validation(config)
+
+    if inherited is not None:
+        # Pinned validation: balance as usual, then hold out exactly the inherited
+        # participants. Raising the choice budget therefore grows only the training set,
+        # which is what makes "more data helped" a claim about the data rather than
+        # about which people happened to be held out.
+        selected = balance_domains(
+            refs,
+            max_choices_per_domain=config.data.max_choices_per_domain,
+            seed=config.data.seed,
+        )
+        return selected, _assignment_with_fixed_validation(selected, inherited)
+
+    if reuse_splits and manifest_path.is_file():
+        assignment = load_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
+        selected = [ref for ref in refs if (ref.experiment, ref.participant) in assignment.keys]
+        logger.info("Reusing the committed split manifest: {} participants", len(assignment.keys))
+        if len(selected) != len(assignment.keys):
+            msg = (
+                f"The manifest names {len(assignment.keys)} participants but only "
+                f"{len(selected)} were found in the dataset. The manifest and the "
+                f"configured experiments disagree; rerun with --resample or fix the config."
+            )
+            raise RuntimeError(msg)
+        return selected, assignment
+
+    selected = balance_domains(
+        refs,
+        max_choices_per_domain=config.data.max_choices_per_domain,
+        seed=config.data.seed,
+    )
+    return selected, split_participants(
+        [(ref.experiment, ref.participant) for ref in selected],
+        val_fraction=config.data.val_fraction,
+        seed=config.data.seed,
+    )
+
+
+def _inherited_validation(config: PipelineConfig) -> tuple[tuple[str, str], ...] | None:
+    """Load the validation participants this run is pinned to, if any.
+
+    Args:
+        config: The pipeline configuration.
+
+    Returns:
+        The validation keys, or ``None`` when the run defines its own split.
+
+    Raises:
+        RuntimeError: When the referenced manifest is absent. Recomputing a split that
+            was meant to be inherited would silently hold out different people, and the
+            resulting number would be incomparable while looking comparable.
+    """
+    source = config.data.validation_from
+    if source is None:
+        return None
+    path = config.paths.manifest_path(source)
+    if not path.is_file():
+        msg = (
+            f"validation_from points at split {source}, but {path} does not exist. "
+            f"Run `prepare` for the configuration that produced it first."
+        )
+        raise RuntimeError(msg)
+    return load_manifest(json.loads(path.read_text(encoding="utf-8"))).validation
+
+
+def _assignment_with_fixed_validation(
+    selected: list[ParticipantRef], validation: tuple[tuple[str, str], ...]
+) -> SplitAssignment:
+    """Build a split whose validation set is pinned and whose training set is free.
+
+    Args:
+        selected: Participants chosen by the balancing step.
+        validation: Validation keys inherited from an earlier split.
+
+    Returns:
+        The assignment. Everything selected that is not held out becomes training, so
+        raising the choice budget grows only the training side and the metric keeps
+        being measured on exactly the same people.
+    """
+    held_out = set(validation)
+    train = tuple(
+        sorted(
+            (ref.experiment, ref.participant)
+            for ref in selected
+            if (ref.experiment, ref.participant) not in held_out
+        )
+    )
+    logger.info(
+        "Validation inherited: {} participants pinned, {} left for training",
+        len(held_out),
+        len(train),
+    )
+    return SplitAssignment(train=train, validation=tuple(sorted(held_out)))
 
 
 def _completed_runs(config: PipelineConfig) -> set[str]:

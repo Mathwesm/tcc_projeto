@@ -136,7 +136,13 @@ def build_trainer(
         The configured trainer.
     """
     import torch
-    from transformers import DataCollatorForSeq2Seq, Trainer, TrainingArguments
+    from transformers import (
+        DataCollatorForSeq2Seq,
+        EarlyStoppingCallback,
+        Trainer,
+        TrainerCallback,
+        TrainingArguments,
+    )
 
     columns = list(TRAINING_COLUMNS)
     train_split = dataset["train"].select_columns(columns)
@@ -161,7 +167,19 @@ def build_trainer(
         fp16=not torch.cuda.is_bf16_supported(),
         report_to="none",
         seed=config.data.seed,
+        # The validation loss of an aggressive configuration bottoms out and then climbs
+        # again -- rank 64 with lr 2e-4 reached its minimum at epoch 3 and was 11% worse
+        # by epoch 5. Keeping the last epoch throws that minimum away.
+        load_best_model_at_end=config.training.select_best_epoch,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
     )
+
+    callbacks: list[TrainerCallback] = []
+    if config.training.early_stopping_patience is not None:
+        callbacks.append(
+            EarlyStoppingCallback(early_stopping_patience=config.training.early_stopping_patience)
+        )
 
     return Trainer(
         model=model,
@@ -171,4 +189,5 @@ def build_trainer(
         data_collator=DataCollatorForSeq2Seq(
             tokenizer=tokenizer, padding=True, label_pad_token_id=-100
         ),
+        callbacks=callbacks,
     )

@@ -1,0 +1,44 @@
+# The final run: the winning configuration, trained on ten times the data.
+#
+# The ablation closed all three hyperparameter axes -- each further step buys under
+# 0.005 -- and then produced its most interesting result: combining the individual
+# optima (rank 64, 5 epochs, lr 2e-4) scored 0.5829, WORSE than the milder rank 32,
+# 3 epochs, lr 1e-4 at 0.5388. The validation curves say why: the aggressive run bottomed
+# out at epoch 3 and was 11% worse by epoch 5, while the mild one only turned at epoch 7
+# and barely. The binding constraint is the size of the training set, not the model.
+#
+# So this run raises the choice budget from 30,000 to 300,000 per domain and keeps the
+# winning hyperparameters. Two predictions follow, both falsifiable: the NLL improves,
+# and the aggressive configuration -- rerun at this budget -- overtakes this one.
+#
+#   poetry run python -m centauro_lite prepare  --config configs/final.yaml
+#   poetry run python -m centauro_lite train    --config configs/final.yaml -o outputs/final/adapter
+#   poetry run python -m centauro_lite evaluate --config configs/final.yaml -a outputs/final/adapter -l final
+
+experiments:
+  risky_choice:
+    - peterson2021using
+  categorization:
+    - badham2017deficits
+  reinforcement_learning:
+    - kool2016when
+
+data:
+  # The same 62 held-out participants as every row of the ablation table. Without this,
+  # a larger budget would select more people, 10% of a different pool would be held out,
+  # and the result would be measured on strangers -- incomparable with everything above
+  # while looking directly comparable. Only the training set grows.
+  validation_from: "2379f5392193"
+  max_choices_per_domain: 300000
+
+model:
+  lora_rank: 32
+  lora_alpha: 64
+
+training:
+  learning_rate: 1.0e-4
+  # Room to run, with the stopping decided by the validation curve rather than guessed
+  # in advance -- which is exactly what the ablation showed we had been getting wrong.
+  num_epochs: 8.0
+  select_best_epoch: true
+  early_stopping_patience: 2
