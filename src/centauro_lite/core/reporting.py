@@ -14,7 +14,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from centauro_lite.core.floor import recovered_fraction
 from centauro_lite.core.metrics import CENTAUR_NLL, COGNITIVE_MODELS_NLL, LLAMA_BASE_NLL
+
+INFORMED_FLOOR_LABEL = "trivial-informed"
+"""The predictor that knows a session's response options and guesses evenly among them.
+It is the honest zero of this task: everything below it is knowledge about the person
+rather than about the instructions."""
+
+TRIVIAL_PREFIX = "trivial-"
 
 BASELINE_MARKERS = ("baseline", "-base")
 """Substrings that identify an untuned run. The baseline is the reference every other
@@ -127,6 +135,38 @@ def rank(rows: Sequence[ReportRow]) -> list[ReportRow]:
     return sorted(rows, key=lambda row: row.nll)
 
 
+def _progress_block(rows: Sequence[ReportRow]) -> list[str]:
+    """Express each score as progress along a range whose ends are both measured.
+
+    Args:
+        rows: Ranked report rows.
+
+    Returns:
+        Lines for the table, or nothing when the informed floor has not been computed.
+
+    Note:
+        An absolute NLL invites comparison with numbers from other test sets, which is
+        exactly the comparison this project cannot make. Anchoring instead to the
+        informed floor -- knowing the response options and nothing else -- and to the
+        published reference states the same result in terms both of whose ends were
+        measured here.
+    """
+    floor = next((row.nll for row in rows if row.label == INFORMED_FLOOR_LABEL), None)
+    scored = [row for row in rows if not row.label.startswith(TRIVIAL_PREFIX)]
+    if floor is None or floor <= CENTAUR_NLL or not scored:
+        return []
+
+    lines = [
+        "",
+        f"Progress from the informed floor ({floor:.4f}, knowing the options and nothing",
+        f"else) towards the Centaur reference ({CENTAUR_NLL:.2f}):",
+    ]
+    for row in scored:
+        share = recovered_fraction(trivial=floor, model=row.nll, reference=CENTAUR_NLL)
+        lines.append(f"  {row.label:<28}{share:>7.1f}%")
+    return lines
+
+
 def format_table(rows: Sequence[ReportRow]) -> str:
     """Render the comparison as fixed-width text.
 
@@ -159,6 +199,7 @@ def format_table(rows: Sequence[ReportRow]) -> str:
             "are not directly comparable -- compare within a fingerprint.",
         ]
 
+    lines += _progress_block(rows)
     lines += [
         "",
         "Published references (all 160 experiments, different tokenizer -- a landmark,",

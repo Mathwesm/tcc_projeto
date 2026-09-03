@@ -52,6 +52,7 @@ train = "python -m centauro_lite train"
 evaluate = "python -m centauro_lite evaluate"
 sweep = "python -m centauro_lite sweep"
 report = "python -m centauro_lite report"
+floor = "python -m centauro_lite floor"
 
 [tool.poe.tasks.gate]
 help = "Run the full quality gate, in the same order as the CI"

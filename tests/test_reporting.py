@@ -126,3 +126,28 @@ def test_the_fingerprint_is_read_from_the_key_evaluate_writes() -> None:
     """
     (row,) = load_rows({"run": {"nll": 0.6, "n_scored_tokens": 10, "data_fingerprint": "abc123"}})
     assert row.fingerprint == "abc123"
+
+
+def test_progress_is_reported_once_the_floor_exists() -> None:
+    """The table states each score as a share of a measured range.
+
+    An absolute NLL invites comparison with numbers from other test sets, which is
+    exactly the comparison this project cannot make.
+    """
+    table = format_table(
+        [_row("model", 0.5388), _row("trivial-informed", 1.0198), _row("baseline", 0.9240)]
+    )
+    assert "Progress from the informed floor" in table
+    assert "83.0%" in table  # (1.0198-0.5388)/(1.0198-0.44)
+
+
+def test_no_progress_block_without_the_floor() -> None:
+    """Reporting progress from a floor nobody measured would be an invented number."""
+    assert "Progress from" not in format_table([_row("model", 0.5388)])
+
+
+def test_the_trivial_rows_are_not_scored_against_themselves() -> None:
+    """The floor is the origin of the scale, not a competitor on it."""
+    table = format_table([_row("trivial-informed", 1.0198), _row("model", 0.5388)])
+    block = table[table.index("Progress from") :]
+    assert "trivial-informed" not in block

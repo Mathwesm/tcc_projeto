@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -20,6 +21,12 @@ from loguru import logger
 from centauro_lite.config import settings
 from centauro_lite.core.catalog import build_catalog, catalog_totals, iter_transcripts
 from centauro_lite.core.chunking import iter_windows
+from centauro_lite.core.floor import (
+    LabelledWindow,
+    informed_uniform_result,
+    marginal_result,
+    uniform_result,
+)
 from centauro_lite.core.masking import count_choices
 from centauro_lite.core.metrics import (
     CENTAUR_NLL,
@@ -437,6 +444,12 @@ def train(
         config.training.num_epochs,
     )
     trainer.train()
+
+    # The validation loss per epoch is what shows a run turning from learning into
+    # memorising, and it lives only in the trainer's state until the session ends.
+    (destination / "history.json").write_text(
+        json.dumps(trainer.state.log_history, indent=2), encoding="utf-8"
+    )
 
     model.save_pretrained(str(destination))
     tokenizer.save_pretrained(str(destination))
@@ -872,6 +885,51 @@ def _run_stage(arguments: list[str]) -> bool:
 
 
 @app.command()
+def floor(config_path: ConfigOption = DEFAULT_CONFIG_PATH) -> None:
+    """Score the trivial predictors, which need no GPU and take seconds.
+
+    An NLL means little on its own: part of any score is available to anything that
+    counts keypresses. These two predictors bracket that part -- uniform is what pure
+    ignorance costs, marginal is the best possible while ignoring the experiment
+    entirely -- and the distance from marginal to the fine-tuned model is the share that
+    required actually reading the trials.
+
+    They double as the cheapest sanity check in the project: a fine-tuned model that
+    fails to beat marginal has learned nothing a frequency table does not already know.
+
+    Args:
+        config_path: Location of the YAML configuration.
+    """
+    from datasets import load_from_disk
+
+    config = _bootstrap(config_path)
+    _require_matching_data(config)
+    dataset = load_from_disk(str(config.paths.dataset_dir(config.data_fingerprint)))
+
+    def windows(split: str) -> list[LabelledWindow]:
+        rows = dataset[split]
+        return [
+            LabelledWindow(
+                experiment=str(experiment), participant=str(participant), labels=list(labels)
+            )
+            for experiment, participant, labels in zip(
+                rows["experiment"], rows["participant"], rows["labels"], strict=True
+            )
+        ]
+
+    train, validation = windows("train"), windows("validation")
+    logger.info("Scoring trivial predictors on {} validation windows", len(validation))
+
+    for result in (
+        uniform_result(train, validation),
+        marginal_result(train, validation),
+        informed_uniform_result(validation),
+    ):
+        _write_results(config, result)
+        _report(result)
+
+
+@app.command()
 def report(config_path: ConfigOption = DEFAULT_CONFIG_PATH) -> None:
     """Render the comparison table and the charts from the accumulated results.
 
@@ -891,6 +949,7 @@ def report(config_path: ConfigOption = DEFAULT_CONFIG_PATH) -> None:
 
     (config.paths.outputs / "report.txt").write_text(table + "\n", encoding="utf-8")
     _plot(rows, config.paths.outputs / "figures")
+    _plot_factor_curves(rows, config, config.paths.outputs / "figures")
 
 
 def _plot(rows: Any, directory: Path) -> None:
@@ -939,6 +998,83 @@ def _plot(rows: Any, directory: Path) -> None:
     figure.savefig(directory / "per_experiment.png", dpi=150, bbox_inches="tight")
     plt.close(figure)
     logger.info("Figures written to {}", directory)
+
+
+def _sweep_configs() -> dict[str, PipelineConfig]:
+    """Load every sweep configuration, keyed by the label its results carry.
+
+    Returns:
+        Configurations by run name. Labels come from the file stem, which is exactly
+        what `sweep` passes to `evaluate`, so results and configurations line up
+        without a second registry to keep in sync.
+    """
+    return {
+        path.stem: PipelineConfig.from_yaml(path)
+        for path in sorted(Path("configs/sweep").rglob("*.yaml"))
+    }
+
+
+def _plot_factor_curves(rows: Any, config: PipelineConfig, directory: Path) -> None:
+    """Plot NLL against each hyperparameter that was varied on its own.
+
+    Only single-factor runs are drawn. A combination moves two axes at once, so placing
+    it on an axis for one of them would show a point whose position no reader could
+    attribute -- which is the same reason the ablation varies one thing at a time.
+
+    Args:
+        rows: Ranked report rows.
+        config: The default configuration, supplying each axis's reference value.
+        directory: Where the figure goes.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    configs = _sweep_configs()
+    by_label = {row.label: row.nll for row in rows}
+    reference = next(
+        (nll for label, nll in by_label.items() if "reference" in label or label == "default"),
+        None,
+    )
+
+    # Annotated so the lambdas are typed: without it mypy treats each getter as
+    # untyped and every call through it becomes an error in a strict module.
+    axes_spec: list[tuple[str, Callable[[PipelineConfig], float], float]] = [
+        ("LoRA rank", lambda c: c.model.lora_rank, config.model.lora_rank),
+        ("Epochs", lambda c: c.training.num_epochs, config.training.num_epochs),
+        ("Learning rate", lambda c: c.training.learning_rate, config.training.learning_rate),
+    ]
+
+    figure, panels = plt.subplots(1, 3, figsize=(13, 4))
+    for panel, (name, getter, default_value) in zip(panels, axes_spec, strict=True):
+        points: list[tuple[float, float]] = []
+        for label, run in configs.items():
+            if label not in by_label:
+                continue
+            varied = [other for _, other, base in axes_spec if other(run) != base]
+            # A run belongs on this axis only if it is the single thing it changed.
+            if len(varied) == 1 and varied[0] is getter:
+                points.append((float(getter(run)), by_label[label]))
+        if reference is not None:
+            points.append((float(default_value), reference))
+
+        points.sort()
+        if not points:
+            panel.set_visible(False)
+            continue
+        panel.plot(*zip(*points, strict=True), marker="o", color="#4C72B0")
+        panel.set_xlabel(name)
+        panel.set_ylabel("NLL")
+        if name == "Learning rate":
+            panel.set_xscale("log")
+        panel.grid(alpha=0.3)
+
+    figure.suptitle("Each axis varied alone: monotone, with halving returns")
+    figure.tight_layout()
+    figure.savefig(directory / "factor_curves.png", dpi=150, bbox_inches="tight")
+    plt.close(figure)
+    logger.info("Factor curves written to {}", directory / "factor_curves.png")
 
 
 def main() -> int:

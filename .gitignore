@@ -22,7 +22,11 @@ htmlcov/
 # Runtime artifacts
 logs/
 *.log
-data/*
+data/
+# Everything under outputs/ is generated: trained adapters (tens of MB each),
+# accumulated results and figures. The numbers that matter are transcribed into the
+# README and the write-up, where they are read rather than diffed.
+outputs/*
 !data/processed/
 data/processed/*
 
